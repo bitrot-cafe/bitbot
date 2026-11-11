@@ -1,13 +1,13 @@
 import { readdir } from 'node:fs/promises';
 import { EmbedBuilder } from '@fluxerjs/core';
 import { botInviteUrl } from './invite.js';
-import { createLogger, isDebug, setDebug } from './logger.js';
+import { adminModule } from './admin.js';
+import { createLogger } from './logger.js';
 import { helpUrl, prefix } from './config.js';
 import { sections, usageLine, whoCanUse } from './help.js';
-import { checkAccess, permissionLabel } from './permissions.js';
-import { setStatusTemplate } from './status.js';
+import { checkAccess } from './permissions.js';
 import type { Command, Plugin } from './plugin.js';
-import { commands, coreCommands, plugins } from './registry.js';
+import { commands, modules, plugins, resolveCommand } from './registry.js';
 
 const log = createLogger('plugins');
 
@@ -38,7 +38,7 @@ const help: Command = {
   description: 'List commands, or show a plugin\'s commands or one command\'s details.',
   usage: '[plugin | command]',
   botPermissions: ['EmbedLinks'],
-  run: async (message, [query]) => {
+  run: async (message, _args, query) => {
     // Only show what the caller can actually use here.
     const usable = async (list: Command[]) => {
       const ok: Command[] = [];
@@ -49,14 +49,18 @@ const help: Command = {
     const embed = new EmbedBuilder();
     if (helpUrl) embed.setURL(helpUrl);
 
-    const name = query ? (query.startsWith(prefix) ? query.slice(prefix.length) : query).toLowerCase() : '';
-    const command = name ? commands.get(name) : undefined;
+    const words = query ? query.split(/\s+/) : [];
+    const name = words.length ? (words[0].startsWith(prefix) ? words[0].slice(prefix.length) : words[0]).toLowerCase() : '';
+    const resolved = name ? resolveCommand(name, words.slice(1)) : null;
     const section = name ? all.find((s) => s.id === name || s.title.toLowerCase() === name) : undefined;
 
-    // !help <command>: details, plus the rest of its plugin (covers a plugin and command sharing a name)
-    if (command) {
-      const from = all.find((s) => s.commands.includes(command));
-      const siblings = from?.id ? (await usable(from.commands)).filter((c) => c !== command) : [];
+    // !help <command> [sub...]: details, plus related commands (a group's subcommands, or the rest of its plugin)
+    if (resolved) {
+      const command = resolved.command;
+      const from = all.find((s) => s.commands.some((c) => c.name === command.name || c.name.startsWith(`${command.name} `)));
+      const related = (await usable(from?.commands ?? [])).filter(
+        (c) => c.name !== command.name && (from?.id !== 'core' || c.name.startsWith(`${command.name} `)),
+      );
       embed
         .setTitle(`\`${usageLine(command)}\``)
         .setDescription(command.description)
@@ -64,8 +68,8 @@ const help: Command = {
           { name: 'From', value: from?.title ?? 'Core', inline: true },
           { name: 'Who can use it', value: whoCanUse(command), inline: true },
         );
-      if (siblings.length) {
-        embed.addFields({ name: `Also in ${from!.title}`, value: siblings.map((c) => `\`${usageLine(c)}\``).join('\n') });
+      if (related.length) {
+        embed.addFields({ name: `Also in ${from!.title}`, value: related.map((c) => `\`${usageLine(c)}\``).join('\n') });
       }
       return message.reply({ embeds: [embed] });
     }
@@ -91,7 +95,7 @@ const help: Command = {
     for (const s of all) {
       const list = await usable(s.commands);
       if (!list.length) continue;
-      const value = s.id
+      const value = s.id !== 'core'
         ? `${s.description ?? ''}\n\`${prefix}help ${s.id}\` · ${list.length} command${list.length === 1 ? '' : 's'}`.trim()
         : list.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n');
       embed.addFields({ name: s.title, value });
@@ -100,58 +104,11 @@ const help: Command = {
   },
 };
 
-const admin: Command = {
-  name: 'admin',
-  description: 'Bot administration: list loaded plugins, show plugin details, set the bot status, toggle debug mode.',
-  usage: 'plugins list | plugins info <number> | status <text|reset> | debug [on|off]',
-  botAdminOnly: true,
-  botPermissions: ['EmbedLinks'],
-  run: async (message, [area, action, arg]) => {
-    if (area === 'debug') {
-      if (action === 'on' || action === 'off') setDebug(action === 'on');
-      return message.reply(
-        `Debug mode is **${isDebug() ? 'on' : 'off'}**${isDebug() ? ': debug logs shown, error details included in replies.' : '.'} (resets on restart)`,
-      );
-    }
-    if (area === 'status') {
-      if (!action) return message.reply(`Usage: \`${prefix}admin status <text>\` or \`${prefix}admin status reset\`. Placeholders: \`{prefix}\`, \`{guilds}\``);
-      // Take the text from the raw message (after "<prefix>admin status ") so its spacing is kept.
-      const text = action === 'reset' ? null : message.content.replace(/^\S+\s+status\s+/i, '');
-      const shown = setStatusTemplate(message.client, text);
-      return message.reply(`Status set to: ${shown}${text === null ? ' (default)' : ''}`);
-    }
-    if (area !== 'plugins') return message.reply(`Usage: \`${prefix}admin ${admin.usage}\``);
-
-    if (action === 'list') {
-      if (plugins.length === 0) return message.reply('No plugins loaded.');
-      const lines = plugins.map((p, i) => `${i + 1}. ${p.name} (v${p.version}) - ${p.author}`);
-      return message.reply(lines.join('\n'));
-    }
-
-    if (action === 'info') {
-      const p = plugins[Number(arg) - 1];
-      if (!p) return message.reply(`No plugin #${arg}. See \`${prefix}admin plugins list\`.`);
-      const perms = [...new Set(p.commands.flatMap((c) => c.botPermissions ?? []))];
-      const embed = new EmbedBuilder()
-        .setTitle(p.name)
-        .setDescription(p.description ?? null)
-        .addFields(
-          { name: 'Version', value: `v${p.version}`, inline: true },
-          { name: 'Author', value: p.author, inline: true },
-          { name: 'Folder', value: `\`plugins/${p.id}\``, inline: true },
-          { name: 'Repo', value: p.repo ?? '—' },
-          { name: 'Commands', value: p.commands.map((c) => `\`${c.name}\` — ${c.description}`).join('\n') },
-          { name: 'Bot permissions', value: perms.length ? perms.map(permissionLabel).join(', ') : '—' },
-        );
-      return message.reply({ embeds: [embed] });
-    }
-
-    return message.reply(`Usage: \`${prefix}admin ${admin.usage}\``);
-  },
-};
-
-coreCommands.push(help, ping, invite, admin);
-for (const command of coreCommands) commands.set(command.name, command);
+modules.push(
+  { id: 'core', title: 'Core', commands: [help, ping, invite] },
+  adminModule,
+);
+for (const command of modules.flatMap((m) => m.commands)) commands.set(command.name, command);
 
 // ---- Plugin loading -------------------------------------------------------------------------------
 

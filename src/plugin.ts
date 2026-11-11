@@ -13,7 +13,13 @@ export type Command = {
   botAdminOnly?: boolean;
   /** Refuse to run in DMs. */
   guildOnly?: boolean;
-  run: (message: Message, args: string[]) => Promise<unknown>;
+  /** Child commands, e.g. "admin" -> "status". Children inherit this command's restrictions. */
+  subcommands?: Command[];
+  /**
+   * `args` are the words after the command (and subcommand) name; `rest` is the same text unsplit,
+   * spacing kept. Optional for a pure group: running the group shows its subcommands.
+   */
+  run?: (message: Message, args: string[], rest: string) => Promise<unknown>;
 };
 
 /**

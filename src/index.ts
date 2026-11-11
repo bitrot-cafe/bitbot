@@ -1,11 +1,11 @@
 import { Client, Events, parsePrefixCommand } from '@fluxerjs/core';
 import { loadPlugins } from './commands.js';
 import { instance, prefix, token } from './config.js';
-import { writeHelpPage } from './help.js';
+import { groupUsage, writeHelpPage } from './help.js';
 import { botInviteUrl } from './invite.js';
 import { attachLogChannel, checkLogChannel, createLogger, errorMessage, isDebug } from './logger.js';
 import { checkAccess, loadApplicationOwner, permissionErrorReply } from './permissions.js';
-import { commands } from './registry.js';
+import { resolveCommand } from './registry.js';
 import { startStatus } from './status.js';
 
 const log = createLogger('core');
@@ -20,6 +20,15 @@ if (!token) {
 const client = instance
   ? await Client.fromDiscovery(instance.includes('://') ? instance : `https://${instance}`)
   : new Client();
+
+// Last-resort safety net for async code outside a command's try/catch (event listeners, timers):
+// log instead of letting Node kill the process. A truly uncaught exception leaves the process in an
+// unknown state, so log it and exit; the container's restart policy brings the bot back.
+process.on('unhandledRejection', (reason) => log.error('Unhandled promise rejection', reason));
+process.on('uncaughtException', (error) => {
+  log.error('Uncaught exception, exiting', error);
+  setTimeout(() => process.exit(1), 1000).unref(); // give the log channel a moment
+});
 
 // Containers stop with SIGTERM (Ctrl+C sends SIGINT). Node ignores both unless we handle them.
 // Registered before login so a stop during startup is handled too.
@@ -48,8 +57,12 @@ client.on(Events.MessageCreate, async (message) => {
   const parsed = parsePrefixCommand(message.content, prefix);
   if (!parsed) return;
 
-  const command = commands.get(parsed.command);
-  if (!command) return;
+  const resolved = resolveCommand(parsed.command, parsed.args);
+  if (!resolved) return;
+  const { command, args, depth } = resolved;
+  // The text after the command path, spacing kept: drop the prefix, then one word per path level.
+  let rest = message.content.slice(prefix.length).trimStart();
+  for (let i = 0; i < depth; i++) rest = rest.replace(/^\S+\s*/, '');
 
   try {
     const problem = await checkAccess(message, command);
@@ -57,7 +70,8 @@ client.on(Events.MessageCreate, async (message) => {
       await message.reply(problem);
       return;
     }
-    await command.run(message, parsed.args);
+    if (command.run) await command.run(message, args, rest);
+    else await message.reply(groupUsage(command)); // a group on its own: show what's in it
   } catch (error) {
     const ref = log.error(`Command "${command.name}" failed`, error, {
       user: message.author.id,

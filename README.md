@@ -39,6 +39,7 @@ podman compose run --rm bot pnpm add <package>
 | `!admin plugins info <n>` | Details for plugin `n` |
 | `!admin status <text\|reset>` | Set the bot status |
 | `!admin debug [on\|off]` | Toggle debug mode (bot administrators) |
+| `!admin helppage` | Regenerate the web help page (bot administrators) |
 
 ## Web help page
 
