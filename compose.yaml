@@ -5,4 +5,4 @@ services:
       target: dev
     env_file: .env
     volumes:
-      - .:/app:Z
+      - .:/app:z

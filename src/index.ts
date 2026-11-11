@@ -1,9 +1,11 @@
 import { Client, Events, parsePrefixCommand } from '@fluxerjs/core';
-import { commands } from './commands.js';
+import { commands, loadPlugins } from './commands.js';
+import { prefix } from './config.js';
 import { botInviteUrl } from './invite.js';
+import { startStatus } from './status.js';
+import { checkAccess, isMissingPermissionsError, loadApplicationOwner } from './permissions.js';
 
 const token = process.env.FLUXER_BOT_TOKEN;
-const prefix = process.env.PREFIX || '!';
 const instance = process.env.FLUXER_INSTANCE; // e.g. chat.example.com — unset means fluxer.app
 
 if (!token) {
@@ -18,6 +20,7 @@ const client = instance
   : new Client();
 
 client.on(Events.Ready, () => {
+  loadApplicationOwner(client).catch((error) => console.error('Could not look up the application owner:', error));
   console.log(`Logged in as ${client.user?.username} (prefix "${prefix}")`);
   if (client.guilds.size === 0) {
     console.log(`Not in any guilds yet. Add the bot with:\n${botInviteUrl(client)}`);
@@ -34,12 +37,25 @@ client.on(Events.MessageCreate, async (message) => {
   if (!command) return;
 
   try {
+    const problem = await checkAccess(message, command);
+    if (problem) {
+      await message.reply(problem);
+      return;
+    }
     await command.run(message, parsed.args);
   } catch (error) {
     console.error(`Command "${command.name}" failed:`, error);
+    if (isMissingPermissionsError(error)) {
+      // A permission the command didn't declare, or a channel overwrite we couldn't see.
+      await message
+        .reply("I don't have permission to do that here. Ask an admin to check my role and this channel's permissions.")
+        .catch(() => {}); // can't even reply: nothing more we can do
+    }
   }
 });
 
+await loadPlugins();
+startStatus(client, prefix);
 await client.login(token);
 
 // Containers stop with SIGTERM (Ctrl+C sends SIGINT). Node ignores both unless we handle them.

@@ -12,6 +12,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
+COPY plugins ./plugins
 RUN pnpm build && pnpm prune --prod
 
 FROM docker.io/library/node:22-alpine AS prod
@@ -20,4 +21,4 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 USER node
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/src/index.js"]
