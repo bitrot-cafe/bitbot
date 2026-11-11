@@ -105,9 +105,19 @@ export async function findMissingPermissions(message: Message, command: Command)
 }
 
 /** The API rejected a request because the bot lacks a permission. */
-export function isMissingPermissionsError(error: unknown): boolean {
+function isMissingPermissionsError(error: unknown): boolean {
   const e = error as { statusCode?: number; code?: string };
   return e?.statusCode === 403 && (e.code === 'MISSING_PERMISSIONS' || e.code === undefined);
+}
+
+/**
+ * Reply for a command that failed mid-run because the API refused a permission: one the command
+ * didn't declare, or a channel overwrite checkAccess couldn't see. Null for any other error.
+ */
+export function permissionErrorReply(error: unknown): string | null {
+  return isMissingPermissionsError(error)
+    ? "I don't have permission to do that here. Ask an admin to check my role and this channel's permissions."
+    : null;
 }
 
 export function missingPermissionsReply(missing: { bot: PermissionString[]; user: PermissionString[] }): string | null {

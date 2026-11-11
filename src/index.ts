@@ -3,7 +3,7 @@ import { commands, loadPlugins } from './commands.js';
 import { prefix } from './config.js';
 import { botInviteUrl } from './invite.js';
 import { startStatus } from './status.js';
-import { checkAccess, isMissingPermissionsError, loadApplicationOwner } from './permissions.js';
+import { checkAccess, loadApplicationOwner, permissionErrorReply } from './permissions.js';
 
 const token = process.env.FLUXER_BOT_TOKEN;
 const instance = process.env.FLUXER_INSTANCE; // e.g. chat.example.com — unset means fluxer.app
@@ -45,12 +45,8 @@ client.on(Events.MessageCreate, async (message) => {
     await command.run(message, parsed.args);
   } catch (error) {
     console.error(`Command "${command.name}" failed:`, error);
-    if (isMissingPermissionsError(error)) {
-      // A permission the command didn't declare, or a channel overwrite we couldn't see.
-      await message
-        .reply("I don't have permission to do that here. Ask an admin to check my role and this channel's permissions.")
-        .catch(() => {}); // can't even reply: nothing more we can do
-    }
+    const reply = permissionErrorReply(error);
+    if (reply) await message.reply(reply).catch(() => {}); // can't even reply: nothing more we can do
   }
 });
 
