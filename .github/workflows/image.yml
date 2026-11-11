@@ -1,5 +1,5 @@
 # Build the production image and publish it to GitHub Container Registry.
-#   Tag v1.2.3  -> ghcr.io/bitrot-cafe/bitbot:1.2.3, :1.2, :latest   (pin these in deployments)
+#   Tag v1.2.3  -> ghcr.io/bitrot-cafe/bitbot:1.2.3, :1.2, :1, :latest (pin one of these in deployments)
 #   Push master -> ghcr.io/bitrot-cafe/bitbot:edge, :sha-<short>      (testing only)
 # Plugins aren't in the image; they're mounted at runtime.
 name: image
@@ -48,6 +48,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            # Major-version tag (:0, :1, ...). metadata-action's {{major}} skips 0.x, so match it directly.
+            type=match,pattern=^v(\d+)\.\d+\.\d+$,group=1
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=edge,enable={{is_default_branch}}
             type=sha,prefix=sha-
