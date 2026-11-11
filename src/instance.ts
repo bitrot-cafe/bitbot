@@ -1,4 +1,7 @@
 import type { Client } from '@fluxerjs/core';
+import { createLogger } from './logger.js';
+
+const log = createLogger('instance');
 
 /*
  * Instance limits.
@@ -21,7 +24,6 @@ export type LimitKey = keyof typeof DEFAULT_LIMITS;
 export const EMOJI_DIMENSIONS = { min: 32, max: 512 };
 
 type LimitRule = {
-  id: string;
   filters?: { traits?: string[]; guildFeatures?: string[] };
   overrides: Record<string, number>;
 };
@@ -32,7 +34,7 @@ export async function fetchLimits(client: Client): Promise<Limits> {
   const discovery = (await client.fetchInstance()) as unknown as { limits?: Limits };
   const limits = discovery.limits ?? { rules: [] };
   if (limits.defaultsHash && limits.defaultsHash !== DEFAULTS_HASH) {
-    console.warn(
+    log.warn(
       `Instance limit defaults changed (hash ${limits.defaultsHash}, expected ${DEFAULTS_HASH}); ` +
         'fallback values in src/instance.ts may be stale.',
     );

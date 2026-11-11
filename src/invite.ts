@@ -1,5 +1,5 @@
 import { PermissionFlags, type Client, type PermissionString } from '@fluxerjs/core';
-import { commands } from './commands.js';
+import { commands } from './registry.js';
 
 // Every command needs these; commands add their own via `botPermissions`.
 const BASE_PERMISSIONS: PermissionString[] = ['ViewChannel', 'SendMessages', 'ReadMessageHistory'];

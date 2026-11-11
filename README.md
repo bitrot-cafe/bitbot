@@ -35,9 +35,17 @@ podman compose run --rm bot pnpm add <package>
 | ------- | ----------- |
 | `!ping` | Replies with Pong! |
 | `!invite` | Link to add the bot to a server |
-| `!admin plugins list` | Numbered list of loaded plugins (needs Manage community) |
+| `!admin plugins list` | Numbered list of loaded plugins (bot administrators) |
 | `!admin plugins info <n>` | Details for plugin `n` |
-| `!addemote <search> [source]` | Add Emote plugin: search 7TV and add an emote to the guild |
+| `!admin status <text\|reset>` | Set the bot status |
+| `!admin debug [on\|off]` | Toggle debug mode (bot administrators) |
+
+## Web help page
+
+Set `HELP_PAGE_PATH` (e.g. `public/help.html`) and the bot writes a static, self-contained command list there on
+startup, built from the plugins it actually loaded. Serve it with any web server and set `HELP_URL` so `!help`
+links to it. In the dev container the project folder is `/app`, so `public/help.html` lands in `./public/`
+(git-ignored).
 
 ## Plugins
 
@@ -66,3 +74,7 @@ export default definePlugin({
 
 Plugins load alphabetically by folder at startup. If two commands share a name, the first one loaded wins
 (core commands always win), and the clash is logged.
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).

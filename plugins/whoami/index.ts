@@ -1,7 +1,7 @@
 // !whoami [@user] — what the bot knows about you (or someone else): identity, bot-level access,
 // and (in a guild) member info.
-import { EmbedBuilder, parseUserMention, UserFlagsBits, type PermissionString } from '@fluxerjs/core';
-import { isBotAdmin, permissionLabel } from '../../src/permissions.js';
+import { EmbedBuilder, parseUserMention, type PermissionString } from '@fluxerjs/core';
+import { hasStaffFlag, isBotAdmin, permissionLabel, permissionsIn } from '../../src/permissions.js';
 import { definePlugin, prefix, type Command } from '../../src/plugin.js';
 
 // Permissions worth calling out; the full list is long and mostly noise.
@@ -38,7 +38,7 @@ const whoami: Command = {
     } catch {
       return message.reply(`Couldn't find user \`${target}\`.`);
     }
-    const staff = (BigInt(user.flags ?? 0) & UserFlagsBits.Staff) !== 0n;
+    const staff = await hasStaffFlag(user);
 
     const embed = new EmbedBuilder()
       .setTitle(user.globalName ?? user.username)
@@ -56,8 +56,7 @@ const whoami: Command = {
     if (guild && !member) {
       embed.addFields({ name: 'This server', value: 'Not a member' });
     } else if (guild && member) {
-      const channel = guild.channels.get(message.channelId);
-      const perms = channel ? member.permissionsIn(channel) : member.permissions;
+      const perms = permissionsIn(member, guild, message.channelId);
       const roles = member.roles.roleIds.map((id) => guild.roles.get(id)?.name).filter((name) => name && name !== '@everyone');
       const held: PermissionString[] = perms.has('Administrator') ? ['Administrator'] : NOTABLE.filter((p) => perms.has(p));
 

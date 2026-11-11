@@ -1,17 +1,15 @@
 import { readdir } from 'node:fs/promises';
 import { EmbedBuilder } from '@fluxerjs/core';
-import { prefix } from './config.js';
 import { botInviteUrl } from './invite.js';
-import { checkAccess } from './permissions.js';
-import { permissionLabel } from './permissions.js';
+import { createLogger, isDebug, setDebug } from './logger.js';
+import { helpUrl, prefix } from './config.js';
+import { sections, usageLine, whoCanUse } from './help.js';
+import { checkAccess, permissionLabel } from './permissions.js';
 import { setStatusTemplate } from './status.js';
 import type { Command, Plugin } from './plugin.js';
+import { commands, coreCommands, plugins } from './registry.js';
 
-/** Loaded plugins, in load order (alphabetical by folder). `id` is the folder name. */
-export const plugins: (Plugin & { id: string })[] = [];
-
-/** Every runnable command: core commands plus those from plugins. */
-export const commands = new Map<string, Command>();
+const log = createLogger('plugins');
 
 // ---- Core commands --------------------------------------------------------------------------------
 
@@ -37,46 +35,66 @@ const invite: Command = {
 
 const help: Command = {
   name: 'help',
-  description: 'List commands, or show details for one.',
-  usage: '[command]',
+  description: 'List commands, or show a plugin\'s commands or one command\'s details.',
+  usage: '[plugin | command]',
   botPermissions: ['EmbedLinks'],
-  run: async (message, [name]) => {
-    const groups = [{ title: 'Core', commands: coreCommands }, ...plugins.map((p) => ({ title: p.name, commands: p.commands }))];
-    // Only list commands the caller can actually use here.
-    const usable = async (c: Command) => (await checkAccess(message, { ...c, botPermissions: [] })) === null;
-    const line = (c: Command) => `\`${prefix}${c.name}${c.usage ? ` ${c.usage}` : ''}\``;
+  run: async (message, [query]) => {
+    // Only show what the caller can actually use here.
+    const usable = async (list: Command[]) => {
+      const ok: Command[] = [];
+      for (const c of list) if ((await checkAccess(message, { ...c, botPermissions: [] })) === null) ok.push(c);
+      return ok;
+    };
+    const all = sections();
+    const embed = new EmbedBuilder();
+    if (helpUrl) embed.setURL(helpUrl);
 
-    if (name) {
-      const command = commands.get((name.startsWith(prefix) ? name.slice(prefix.length) : name).toLowerCase());
-      if (!command) return message.reply(`No command \`${name}\`. Try \`${prefix}help\`.`);
-      const from = groups.find((g) => g.commands.includes(command))?.title ?? 'Core';
-      const embed = new EmbedBuilder()
-        .setTitle(line(command))
+    const name = query ? (query.startsWith(prefix) ? query.slice(prefix.length) : query).toLowerCase() : '';
+    const command = name ? commands.get(name) : undefined;
+    const section = name ? all.find((s) => s.id === name || s.title.toLowerCase() === name) : undefined;
+
+    // !help <command>: details, plus the rest of its plugin (covers a plugin and command sharing a name)
+    if (command) {
+      const from = all.find((s) => s.commands.includes(command));
+      const siblings = from?.id ? (await usable(from.commands)).filter((c) => c !== command) : [];
+      embed
+        .setTitle(`\`${usageLine(command)}\``)
         .setDescription(command.description)
         .addFields(
-          { name: 'From', value: from, inline: true },
-          {
-            name: 'Who can use it',
-            value: command.botAdminOnly
-              ? 'Bot administrators'
-              : command.userPermissions?.length
-                ? command.userPermissions.map(permissionLabel).join(', ')
-                : 'Everyone',
-            inline: true,
-          },
+          { name: 'From', value: from?.title ?? 'Core', inline: true },
+          { name: 'Who can use it', value: whoCanUse(command), inline: true },
+        );
+      if (siblings.length) {
+        embed.addFields({ name: `Also in ${from!.title}`, value: siblings.map((c) => `\`${usageLine(c)}\``).join('\n') });
+      }
+      return message.reply({ embeds: [embed] });
+    }
+
+    // !help <plugin>: that plugin's commands
+    if (section) {
+      const list = await usable(section.commands);
+      embed
+        .setTitle(section.title)
+        .setDescription(
+          [section.description, list.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n') || 'Nothing here you can use.']
+            .filter(Boolean)
+            .join('\n\n'),
         );
       return message.reply({ embeds: [embed] });
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle('Commands')
-      .setFooter({ text: `${prefix}help <command> for details` });
-    for (const group of groups) {
-      const lines: string[] = [];
-      for (const c of group.commands) {
-        if (commands.get(c.name) === c && (await usable(c))) lines.push(`${line(c)} — ${c.description}`);
-      }
-      if (lines.length) embed.addFields({ name: group.title, value: lines.join('\n') });
+    if (query) return message.reply(`No command or plugin called \`${query}\`. Try \`${prefix}help\`.`);
+
+    // !help: core commands in full, one line per plugin
+    embed.setTitle('Commands').setFooter({ text: `${prefix}help <plugin | command> for more` });
+    if (helpUrl) embed.setDescription(`Full list: ${helpUrl}`);
+    for (const s of all) {
+      const list = await usable(s.commands);
+      if (!list.length) continue;
+      const value = s.id
+        ? `${s.description ?? ''}\n\`${prefix}help ${s.id}\` · ${list.length} command${list.length === 1 ? '' : 's'}`.trim()
+        : list.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n');
+      embed.addFields({ name: s.title, value });
     }
     return message.reply({ embeds: [embed] });
   },
@@ -84,11 +102,17 @@ const help: Command = {
 
 const admin: Command = {
   name: 'admin',
-  description: 'Bot administration: list loaded plugins, show plugin details, set the bot status.',
-  usage: 'plugins list | plugins info <number> | status <text|reset>',
+  description: 'Bot administration: list loaded plugins, show plugin details, set the bot status, toggle debug mode.',
+  usage: 'plugins list | plugins info <number> | status <text|reset> | debug [on|off]',
   botAdminOnly: true,
   botPermissions: ['EmbedLinks'],
   run: async (message, [area, action, arg]) => {
+    if (area === 'debug') {
+      if (action === 'on' || action === 'off') setDebug(action === 'on');
+      return message.reply(
+        `Debug mode is **${isDebug() ? 'on' : 'off'}**${isDebug() ? ': debug logs shown, error details included in replies.' : '.'} (resets on restart)`,
+      );
+    }
     if (area === 'status') {
       if (!action) return message.reply(`Usage: \`${prefix}admin status <text>\` or \`${prefix}admin status reset\`. Placeholders: \`{prefix}\`, \`{guilds}\``);
       // Take the text from the raw message (after "<prefix>admin status ") so its spacing is kept.
@@ -126,7 +150,7 @@ const admin: Command = {
   },
 };
 
-const coreCommands = [help, ping, invite, admin];
+coreCommands.push(help, ping, invite, admin);
 for (const command of coreCommands) commands.set(command.name, command);
 
 // ---- Plugin loading -------------------------------------------------------------------------------
@@ -144,15 +168,15 @@ export async function loadPlugins() {
       for (const command of plugin.commands) {
         const existing = commands.get(command.name);
         if (existing) {
-          console.warn(`Plugin "${id}": command "${command.name}" already exists, skipping it.`);
+          log.warn(`Plugin "${id}": command "${command.name}" already exists, skipping it.`);
           continue;
         }
         commands.set(command.name, command);
       }
       plugins.push({ ...plugin, id });
-      console.log(`Loaded plugin ${plugin.name} v${plugin.version} (${plugin.commands.length} commands)`);
+      log.info(`Loaded plugin ${plugin.name} v${plugin.version} (${plugin.commands.length} commands)`);
     } catch (error) {
-      console.error(`Failed to load plugin "${id}":`, error);
+      log.error(`Failed to load plugin "${id}"`, error);
     }
   }
 }

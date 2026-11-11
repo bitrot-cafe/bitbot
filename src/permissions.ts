@@ -1,4 +1,13 @@
-import { UserFlagsBits, type Client, type Message, type PermissionString, type User } from '@fluxerjs/core';
+import {
+  UserFlagsBits,
+  type Client,
+  type Guild,
+  type GuildMember,
+  type Message,
+  type PermissionString,
+  type User,
+} from '@fluxerjs/core';
+import { trustInstanceStaff } from './config.js';
 import type { Command } from './plugin.js';
 
 // Labels as Fluxer's UI shows them (en-US), so users can find the toggle.
@@ -58,21 +67,28 @@ export const permissionLabel = (name: PermissionString) =>
  */
 
 let applicationOwnerId: string | null = null;
-// Off by default: on fluxer.app "Staff" means Fluxer employees, not the people running this bot.
-const trustInstanceStaff = process.env.TRUST_INSTANCE_STAFF === 'true';
 
-/** Look up who owns the bot's application. Call once after login. */
+/** Look up who owns the bot's application. Runs on every (re)connect; cheap. */
 export async function loadApplicationOwner(client: Client) {
   const app = await client.rest.get<{ owner?: { id: string } }>('/oauth2/applications/@me');
   applicationOwnerId = app.owner?.id ?? null;
 }
 
+/** Whether the user carries the instance Staff flag. Public flags include it unless they hid their staff badge. */
+export async function hasStaffFlag(user: User): Promise<boolean> {
+  const flags = user.flags ?? (await user.client.users.fetch(user.id)).flags ?? 0; // gateway users can be partial
+  return (BigInt(flags) & UserFlagsBits.Staff) !== 0n;
+}
+
 export async function isBotAdmin(user: User): Promise<boolean> {
   if (user.id === applicationOwnerId) return true;
-  if (!trustInstanceStaff) return false;
-  // Public flags include Staff unless the user hid their staff badge.
-  const flags = user.flags ?? (await user.client.users.fetch(user.id)).flags ?? 0;
-  return (BigInt(flags) & UserFlagsBits.Staff) !== 0n;
+  return trustInstanceStaff && (await hasStaffFlag(user));
+}
+
+/** A member's effective permissions in a channel (roles + overwrites), or guild-wide if the channel isn't cached. */
+export function permissionsIn(member: GuildMember, guild: Guild, channelId: string) {
+  const channel = guild.channels.get(channelId);
+  return channel ? member.permissionsIn(channel) : member.permissions;
 }
 
 /** Why `message.author` can't run `command` here, as a reply; null when they can. */
@@ -86,21 +102,19 @@ export async function checkAccess(message: Message, command: Command): Promise<s
  * Which of the command's declared permissions are missing, for the bot and for the caller.
  * Checks channel-level permissions (role + overwrites) where possible, guild-level otherwise.
  */
-export async function findMissingPermissions(message: Message, command: Command) {
+async function findMissingPermissions(message: Message, command: Command) {
   const missing = { bot: [] as PermissionString[], user: [] as PermissionString[] };
   const guild = await message.resolveGuild();
   if (!guild) return missing; // DMs: nothing to check
 
-  const channel = guild.channels.get(message.channelId);
-  const check = async (memberPromise: Promise<any>, wanted: PermissionString[] = []) => {
+  const check = async (getMember: () => Promise<GuildMember>, wanted: PermissionString[] = []) => {
     if (wanted.length === 0) return [];
-    const member = await memberPromise;
-    const perms = channel ? member.permissionsIn(channel) : member.permissions;
+    const perms = permissionsIn(await getMember(), guild, message.channelId);
     return wanted.filter((p) => !perms.has(p));
   };
 
-  missing.bot = await check(guild.members.me ? Promise.resolve(guild.members.me) : guild.members.fetchMe(), command.botPermissions);
-  missing.user = await check(guild.members.resolve(message.author.id), command.userPermissions);
+  missing.bot = await check(async () => guild.members.me ?? guild.members.fetchMe(), command.botPermissions);
+  missing.user = await check(() => guild.members.resolve(message.author.id), command.userPermissions);
   return missing;
 }
 
@@ -120,7 +134,7 @@ export function permissionErrorReply(error: unknown): string | null {
     : null;
 }
 
-export function missingPermissionsReply(missing: { bot: PermissionString[]; user: PermissionString[] }): string | null {
+function missingPermissionsReply(missing: { bot: PermissionString[]; user: PermissionString[] }): string | null {
   const list = (perms: PermissionString[]) => perms.map((p) => `**${permissionLabel(p)}**`).join(', ');
   if (missing.user.length) return `You need ${list(missing.user)} to use this.`;
   if (missing.bot.length) {

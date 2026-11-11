@@ -32,5 +32,8 @@ export type Plugin = {
 /** The command prefix, for plugins that show usage hints. */
 export { prefix } from './config.js';
 
+/** Scoped logger for plugins: createLogger('my-plugin'). */
+export { createLogger } from './logger.js';
+
 /** Identity function that gives plugin files type checking. */
 export const definePlugin = (plugin: Plugin): Plugin => plugin;

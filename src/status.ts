@@ -1,10 +1,8 @@
 import { Events, type Client } from '@fluxerjs/core';
+import { defaultStatus, prefix } from './config.js';
 
-// Placeholders: {prefix}, {guilds}. Default can be overridden with BOT_STATUS in .env.
-const DEFAULT_TEMPLATE = process.env.BOT_STATUS || '{prefix}help | Live in {guilds} guilds';
-
-let template = DEFAULT_TEMPLATE;
-let prefix = '!';
+// Placeholders: {prefix}, {guilds}.
+let template = defaultStatus;
 let pending: NodeJS.Timeout | undefined;
 
 function render(client: Client) {
@@ -21,8 +19,7 @@ function update(client: Client) {
 }
 
 /** Keep the bot's status current: on every (re)connect and whenever the guild count changes. */
-export function startStatus(client: Client, commandPrefix: string) {
-  prefix = commandPrefix;
+export function startStatus(client: Client) {
   client.on(Events.Ready, () => update(client));
   client.on(Events.GuildCreate, () => update(client));
   client.on(Events.GuildDelete, () => update(client));
@@ -30,7 +27,7 @@ export function startStatus(client: Client, commandPrefix: string) {
 
 /** Change the status template at runtime (not persisted across restarts). Null restores the default. */
 export function setStatusTemplate(client: Client, text: string | null): string {
-  template = text ?? DEFAULT_TEMPLATE;
+  template = text ?? defaultStatus;
   update(client);
   return render(client);
 }
