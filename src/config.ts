@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 /* All settings, read once from the environment.
  * These should be configured in ../.env (see .env.example), not here in config.ts directly!
  */
@@ -29,3 +31,6 @@ export const helpPagePath = env.HELP_PAGE_PATH ?? '';
 
 /** Public URL of that page; when set, !help links to it. */
 export const helpUrl = env.HELP_URL ?? '';
+
+/** Folder of plugins, loaded at runtime (one subfolder each). Default: plugins/ next to src/. */
+export const pluginsDir = env.PLUGINS_DIR || fileURLToPath(new URL('../plugins/', import.meta.url));

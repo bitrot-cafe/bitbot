@@ -50,12 +50,18 @@ links to it. In the dev container the project folder is `/app`, so `public/help.
 
 ## Plugins
 
-Each plugin is a folder in `plugins/` with an `index.ts` that default-exports its metadata and commands:
+Plugins load **at runtime** from `PLUGINS_DIR` (default `./plugins`), one folder each. They're TypeScript,
+run by tsx in both dev and production, so there's no build step. Plugins live in their own repo(s); the bot
+loads whatever is in the folder.
+
+A plugin folder has an `index.ts` that default-exports a **factory**. The bot calls it with `bot`, its helper
+API. A plugin imports only **types** from the bot (`import type`, erased at runtime), so it works wherever its
+folder is mounted:
 
 ```ts
-import { definePlugin } from '../../src/plugin.js';
+import type { PluginFactory } from 'bitbot';
 
-export default definePlugin({
+const plugin: PluginFactory = (bot) => ({
   name: 'Cool Plugin',
   version: '1.0.0',
   author: 'JohnPluginman',
@@ -65,16 +71,44 @@ export default definePlugin({
     {
       name: 'cool',
       description: 'Does a cool thing.',
+      usage: '[thing]', // optional, shown by !help
       botPermissions: ['AddReactions'], // checked before running, and added to the invite link
-      userPermissions: [], // the caller must have these
-      run: (message, args) => message.reply('cool'),
+      userPermissions: [], // the caller must have these (implies server-only)
+      run: (message, args, rest) => message.reply(`cool ${rest}`),
     },
   ],
+  setup: ({ client, log }) => log.info('connected'), // optional: runs once after the first connect
+  stop: () => {}, // optional: runs on shutdown
 });
+
+export default plugin;
 ```
 
-Plugins load alphabetically by folder at startup. If two commands share a name, the first one loaded wins
-(core commands always win), and the clash is logged.
+- **`bot`** gives `fluxer` (the `@fluxerjs/core` library, the same instance the bot uses), `prefix`,
+  `createLogger`, `isBotAdmin`, `hasStaffFlag`, `permissionLabel`, `permissionsIn` and `limits`. The full
+  list is the `BotAPI` type in `src/plugin.ts`.
+- **Don't import runtime values from `@fluxerjs/core` or the bot.** Use `bot.fluxer.*` and `bot.*`.
+  `import type` is fine.
+- **Dependencies:** give the folder its own `package.json` (with `"type": "module"`) and install them
+  there, inside the container, so native modules like sharp match the image's OS:
+  `podman compose run --rm bot sh -c 'cd plugins/<id> && npm install --omit=dev'`.
+- **Type-checking in a plugin repo:** map `bitbot` to a checkout of this repo,
+  `"paths": { "bitbot": ["../bitbot/src/plugin.ts"] }`, and add `@fluxerjs/core` as a dev dependency.
+
+Plugins load alphabetically by folder. If two commands share a name, the first one loaded wins (core
+commands always win), and the clash is logged. A plugin that fails to load is logged and skipped.
+
+## Production
+
+The `prod` image target is a plain OCI image (works with Docker or Podman). It ships the core and tsx;
+**plugins are mounted**, not baked in:
+
+```sh
+podman build --target prod -t bitbot .
+podman run --env-file .env -v ./plugins:/app/plugins bitbot
+```
+
+To keep the web help page, mount a writable folder at `/app/public` and set `HELP_PAGE_PATH=public/help.html`.
 
 ## License
 

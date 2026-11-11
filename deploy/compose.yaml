@@ -1,0 +1,22 @@
+# /opt/bitbot/compose.yaml: production. Its own compose project; no ports, outbound HTTPS only.
+#   /opt/bitbot/.env        settings and secrets (root:docker 660), from deploy/env.example
+#   /opt/bitbot/plugins/    checkout of the plugin repo (one folder per plugin), mounted read-only
+#   /opt/bitbot/public/     the generated help.html (writable by uid 1000), if HELP_PAGE_PATH is set
+name: bitbot
+
+services:
+  bot:
+    image: ghcr.io/bitrot-cafe/bitbot:0.1.0 # pin a release tag; bump to upgrade
+    env_file: .env
+    environment:
+      PLUGINS_DIR: /app/plugins
+    volumes:
+      - ./plugins:/app/plugins:ro
+      - ./public:/app/public
+    restart: unless-stopped
+    stop_grace_period: 15s # the bot exits within ~5s of SIGTERM
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'

@@ -9,18 +9,17 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/src/index.js",
-    "typecheck": "tsc --noEmit"
+    "start": "node --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'src/**/*.test.ts' 'plugins/**/*.test.ts'"
   },
   "packageManager": "pnpm@12.18.0+sha512.9d7882d5dc82147ecfc4e062aa34834e0ad0296710a1837a1115ae012127d36b7109e321ac1598a1dd0a65597681b1e99917e12ed0d749eae91187943363beb3",
   "dependencies": {
     "@fluxerjs/core": "^3.3.0",
-    "sharp": "^0.35.5"
+    "tsx": "4.23.15"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

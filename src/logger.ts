@@ -4,11 +4,12 @@ import { debug, logChannelId } from './config.js';
 import { permissionLabel, permissionsIn } from './permissions.js';
 
 /*
- * Logging. Every line goes to the console; warnings and errors also go to LOG_CHANNEL_ID when set.
+ * Logging. Every line goes to the console; notices, warnings and errors also go to LOG_CHANNEL_ID when set.
+ * Use notice for normal events an operator should see (e.g. an account was disabled), not for problems.
  * Debug mode (DEBUG=true, or !admin debug on) shows debug lines and puts error details in user replies.
  */
 
-type Level = 'debug' | 'info' | 'warn' | 'error';
+type Level = 'debug' | 'info' | 'notice' | 'warn' | 'error';
 type Fields = Record<string, unknown>;
 
 let debugMode = debug;
@@ -56,7 +57,8 @@ function emit(level: Level, scope: string, message: string, fields?: Fields, err
   const out = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   Object.keys(extra).length ? out(line, extra) : out(line);
 
-  if (client && (level === 'warn' || level === 'error')) {
+  // Only once connected: before login the API rejects us (startup errors stay console-only).
+  if (client?.user && (level === 'notice' || level === 'warn' || level === 'error')) {
     const details = Object.keys(extra).length ? `\n\`\`\`json\n${JSON.stringify(extra, null, 2).slice(0, 1500)}\n\`\`\`` : '';
     client.channels
       .send(logChannelId, `**${level.toUpperCase()}** [${scope}] ${message}${details}`)
@@ -68,6 +70,8 @@ export function createLogger(scope: string) {
   return {
     debug: (message: string, fields?: Fields) => emit('debug', scope, message, fields),
     info: (message: string, fields?: Fields) => emit('info', scope, message, fields),
+    /** Like info, but also posted to the log channel. */
+    notice: (message: string, fields?: Fields) => emit('notice', scope, message, fields),
     warn: (message: string, fields?: Fields) => emit('warn', scope, message, fields),
     /** Logs the error and returns a short reference ID to show users, so they can be matched up. */
     error: (message: string, error?: unknown, fields?: Fields): string => {
@@ -77,3 +81,5 @@ export function createLogger(scope: string) {
     },
   };
 }
+
+export type Logger = ReturnType<typeof createLogger>;

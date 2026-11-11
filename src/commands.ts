@@ -1,12 +1,15 @@
 import { readdir } from 'node:fs/promises';
-import { EmbedBuilder } from '@fluxerjs/core';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { EmbedBuilder, type Client } from '@fluxerjs/core';
 import { botInviteUrl } from './invite.js';
 import { adminModule } from './admin.js';
 import { createLogger } from './logger.js';
-import { helpUrl, prefix } from './config.js';
+import { botApi } from './api.js';
+import { helpUrl, pluginsDir, prefix } from './config.js';
 import { sections, usageLine, whoCanUse } from './help.js';
 import { checkAccess } from './permissions.js';
-import type { Command, Plugin } from './plugin.js';
+import type { Command, Plugin, PluginFactory } from './plugin.js';
 import { commands, modules, plugins, resolveCommand } from './registry.js';
 
 const log = createLogger('plugins');
@@ -112,19 +115,31 @@ for (const command of modules.flatMap((m) => m.commands)) commands.set(command.n
 
 // ---- Plugin loading -------------------------------------------------------------------------------
 
-/** Import every plugins/<id>/index and register its commands. Core commands win name clashes. */
-export async function loadPlugins() {
-  // Works from both src/ (tsx, .ts) and dist/src/ (compiled, .js).
-  const dir = new URL('../plugins/', import.meta.url);
-  const ext = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
-  const folders = (await readdir(dir, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+/** A loaded module's default export, checked to be a plugin factory's result. */
+function asPlugin(value: unknown): Plugin {
+  const p = value as Plugin;
+  if (!p || typeof p.name !== 'string' || typeof p.version !== 'string' || !Array.isArray(p.commands)) {
+    throw new Error('index.ts must default-export a function returning { name, version, author, commands }');
+  }
+  return p;
+}
 
-  for (const id of folders) {
+/**
+ * Load every PLUGINS_DIR/<id>/index.ts (TypeScript, run by tsx) and register its commands.
+ * Core commands win name clashes; a broken plugin is logged and skipped, never fatal.
+ */
+export async function loadPlugins() {
+  const folders = await readdir(pluginsDir, { withFileTypes: true }).catch((error) => {
+    log.warn(`Can't read the plugins folder ${pluginsDir}; starting without plugins`, { error: String(error) });
+    return [];
+  });
+  for (const id of folders.filter((d) => d.isDirectory()).map((d) => d.name).sort()) {
     try {
-      const plugin: Plugin = (await import(new URL(`${id}/index.${ext}`, dir).href)).default;
+      const factory: PluginFactory = (await import(pathToFileURL(join(pluginsDir, id, 'index.ts')).href)).default;
+      if (typeof factory !== 'function') throw new Error('index.ts must default-export a function: (bot) => plugin');
+      const plugin = asPlugin(await factory(botApi));
       for (const command of plugin.commands) {
-        const existing = commands.get(command.name);
-        if (existing) {
+        if (commands.has(command.name)) {
           log.warn(`Plugin "${id}": command "${command.name}" already exists, skipping it.`);
           continue;
         }
@@ -134,6 +149,30 @@ export async function loadPlugins() {
       log.info(`Loaded plugin ${plugin.name} v${plugin.version} (${plugin.commands.length} commands)`);
     } catch (error) {
       log.error(`Failed to load plugin "${id}"`, error);
+    }
+  }
+}
+
+/** Run each plugin's setup hook. Call once, after the first Ready. One plugin failing doesn't stop the others. */
+export async function startPlugins(client: Client) {
+  for (const p of plugins) {
+    if (!p.setup) continue;
+    try {
+      await p.setup({ client, log: createLogger(p.id) });
+    } catch (error) {
+      log.error(`Plugin "${p.id}" setup failed`, error);
+    }
+  }
+}
+
+/** Run each plugin's stop hook (shutdown). Errors are logged and don't block the others. */
+export async function stopPlugins() {
+  for (const p of plugins) {
+    if (!p.stop) continue;
+    try {
+      await p.stop();
+    } catch (error) {
+      log.error(`Plugin "${p.id}" stop failed`, error);
     }
   }
 }

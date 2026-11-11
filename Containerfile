@@ -7,18 +7,17 @@ WORKDIR /app
 FROM base AS dev
 CMD ["sh", "-c", "pnpm install && exec node_modules/.bin/tsx watch src/index.ts"]
 
-FROM base AS build
+# Production dependencies only (includes tsx: the core and plugins run as TypeScript).
+FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
-COPY tsconfig.json ./
-COPY src ./src
-COPY plugins ./plugins
-RUN pnpm build && pnpm prune --prod
+RUN pnpm install --frozen-lockfile --prod
 
 FROM docker.io/library/node:22-alpine AS prod
 WORKDIR /app
-COPY --from=build /app/package.json ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json tsconfig.json ./
+COPY src ./src
+# Plugins aren't baked in: mount a folder of them at /app/plugins (see README, "Production").
+RUN mkdir -p plugins public && chown node:node public
 USER node
-CMD ["node", "dist/src/index.js"]
+CMD ["node", "--import", "tsx", "src/index.ts"]

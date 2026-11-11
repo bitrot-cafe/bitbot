@@ -5,8 +5,13 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "."
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "paths": {
+      "bitbot": [
+        "./src/plugin.ts"
+      ]
+    }
   },
   "include": [
     "src",

@@ -1,5 +1,5 @@
 import { Client, Events, parsePrefixCommand } from '@fluxerjs/core';
-import { loadPlugins } from './commands.js';
+import { loadPlugins, startPlugins, stopPlugins } from './commands.js';
 import { instance, prefix, token } from './config.js';
 import { groupUsage, writeHelpPage } from './help.js';
 import { botInviteUrl } from './invite.js';
@@ -36,6 +36,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, async () => {
     log.info(`${signal} received, shutting down.`);
     setTimeout(() => process.exit(0), 5000).unref(); // don't let a hung disconnect block shutdown
+    await stopPlugins();
     await client.destroy();
     process.exit(0);
   });
@@ -50,6 +51,9 @@ client.on(Events.Ready, () => {
     log.info(`Not in any guilds yet. Add the bot with:\n${botInviteUrl(client)}`);
   }
 });
+
+// Plugin setup hooks run once, on the first connect (not on reconnects).
+client.once(Events.Ready, () => startPlugins(client));
 
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.content) return;

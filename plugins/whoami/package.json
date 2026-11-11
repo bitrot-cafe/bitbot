@@ -1,0 +1,5 @@
+{
+  "name": "bitbot-plugin-whoami",
+  "private": true,
+  "type": "module"
+}

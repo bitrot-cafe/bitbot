@@ -4,4 +4,5 @@ dist/
 
 # Plugins managed in their own repo for now
 plugins/addemote/
+plugins/access-sync/
 public/
