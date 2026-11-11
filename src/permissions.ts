@@ -93,8 +93,8 @@ export function permissionsIn(member: GuildMember, guild: Guild, channelId: stri
 
 /** Why `message.author` can't run `command` here, as a reply; null when they can. */
 export async function checkAccess(message: Message, command: Command): Promise<string | null> {
-  if (command.botAdminOnly && !(await isBotAdmin(message.author))) return 'Only bot administrators can use this.';
-  if ((command.guildOnly || command.userPermissions?.length) && !message.guildId) return 'This only works in a server.';
+  if (command.botAdminOnly && !(await isBotAdmin(message.author))) return '🔒 Only bot administrators can use this.';
+  if ((command.guildOnly || command.userPermissions?.length) && !message.guildId) return '🔒 This only works in a server.';
   return missingPermissionsReply(await findMissingPermissions(message, command));
 }
 
@@ -130,15 +130,15 @@ function isMissingPermissionsError(error: unknown): boolean {
  */
 export function permissionErrorReply(error: unknown): string | null {
   return isMissingPermissionsError(error)
-    ? "I don't have permission to do that here. Ask an admin to check my role and this channel's permissions."
+    ? "🔒 I don't have permission to do that here. Ask an admin to check my role and this channel's permissions."
     : null;
 }
 
 function missingPermissionsReply(missing: { bot: PermissionString[]; user: PermissionString[] }): string | null {
   const list = (perms: PermissionString[]) => perms.map((p) => `**${permissionLabel(p)}**`).join(', ');
-  if (missing.user.length) return `You need ${list(missing.user)} to use this.`;
+  if (missing.user.length) return `🔒 You need ${list(missing.user)} to use this.`;
   if (missing.bot.length) {
-    return `I'm missing ${list(missing.bot)} here. Ask an admin to grant ${missing.bot.length > 1 ? 'them' : 'it'} to my role.`;
+    return `🔒 I'm missing ${list(missing.bot)} here. Ask an admin to grant ${missing.bot.length > 1 ? 'them' : 'it'} to my role.`;
   }
   return null;
 }

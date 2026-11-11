@@ -1,11 +1,13 @@
-import { Client, Events, parsePrefixCommand } from '@fluxerjs/core';
+import { Client, EmbedBuilder, Events, parsePrefixCommand } from '@fluxerjs/core';
 import { loadPlugins, startPlugins, stopPlugins } from './commands.js';
 import { instance, prefix, token } from './config.js';
 import { groupUsage, writeHelpPage } from './help.js';
 import { botInviteUrl } from './invite.js';
+import { onShutdown, shutdown } from './lifecycle.js';
 import { attachLogChannel, checkLogChannel, createLogger, errorMessage, isDebug } from './logger.js';
 import { checkAccess, loadApplicationOwner, permissionErrorReply } from './permissions.js';
-import { resolveCommand } from './registry.js';
+import { disabledPlugins, resolveCommand } from './registry.js';
+import { ensureRepos } from './repos.js';
 import { startStatus } from './status.js';
 
 const log = createLogger('core');
@@ -27,25 +29,26 @@ const client = instance
 process.on('unhandledRejection', (reason) => log.error('Unhandled promise rejection', reason));
 process.on('uncaughtException', (error) => {
   log.error('Uncaught exception, exiting', error);
-  setTimeout(() => process.exit(1), 1000).unref(); // give the log channel a moment
+  setTimeout(() => shutdown('uncaught exception', 1), 1000).unref(); // give the log channel a moment
 });
 
+// Clean-up on shutdown or restart: plugins first, then the gateway connection.
+onShutdown(stopPlugins);
+onShutdown(() => client.destroy());
 // Containers stop with SIGTERM (Ctrl+C sends SIGINT). Node ignores both unless we handle them.
 // Registered before login so a stop during startup is handled too.
-for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-  process.once(signal, async () => {
-    log.info(`${signal} received, shutting down.`);
-    setTimeout(() => process.exit(0), 5000).unref(); // don't let a hung disconnect block shutdown
-    await stopPlugins();
-    await client.destroy();
-    process.exit(0);
-  });
-}
+for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => shutdown(`${signal} received`));
 
 client.on(Events.Ready, () => {
   loadApplicationOwner(client).catch((error) => log.error('Could not look up the application owner', error));
   log.info(`Logged in as ${client.user?.username} (prefix "${prefix}")`);
   checkLogChannel(client);
+  if (disabledPlugins.length) {
+    // Repeated now that we're connected, so it reaches the log channel (load-time logs can't).
+    log.warn(`${disabledPlugins.length} plugin(s) not loaded`, {
+      plugins: disabledPlugins.map((p) => `${p.id}: ${p.reason}`),
+    });
+  }
   writeHelpPage(client.user?.username ?? 'Bot');
   if (client.guilds.size === 0) {
     log.info(`Not in any guilds yet. Add the bot with:\n${botInviteUrl(client)}`);
@@ -83,14 +86,24 @@ client.on(Events.MessageCreate, async (message) => {
       channel: message.channelId,
       content: message.content,
     });
-    const reply =
-      permissionErrorReply(error) ??
-      `Something went wrong running \`${prefix}${command.name}\`${isDebug() ? `: ${errorMessage(error)}` : '.'} (ref ${ref})`;
-    await message.reply(reply).catch(() => {}); // can't even reply: it's logged, nothing more to do
+    const denied = permissionErrorReply(error);
+    if (denied) return void (await message.reply(denied).catch(() => {}));
+    const embed = new EmbedBuilder()
+      .setTitle('❌ Something went wrong')
+      .setColor(0xef4444)
+      .setDescription(`\`${prefix}${command.name}\` failed. A bot admin can look it up with the ref below.`)
+      .addFields({ name: 'Ref', value: `\`${ref}\``, inline: true });
+    if (isDebug()) embed.addFields({ name: 'Error (debug mode)', value: `\`\`\`\n${errorMessage(error).slice(0, 990)}\n\`\`\`` });
+    // No Embed links here? Fall back to text. Can't even reply? It's logged; nothing more to do.
+    await message
+      .reply({ embeds: [embed] })
+      .catch(() => message.reply(`❌ \`${prefix}${command.name}\` failed (ref ${ref}).`))
+      .catch(() => {});
   }
 });
 
 attachLogChannel(client);
+await ensureRepos(); // clone any repo in plugins.json that's missing (fresh install)
 await loadPlugins();
 startStatus(client);
 await client.login(token);

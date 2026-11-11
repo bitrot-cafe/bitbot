@@ -1,4 +1,3 @@
-import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EmbedBuilder, type Client } from '@fluxerjs/core';
@@ -6,11 +5,12 @@ import { botInviteUrl } from './invite.js';
 import { adminModule } from './admin.js';
 import { createLogger } from './logger.js';
 import { botApi } from './api.js';
-import { helpUrl, pluginsDir, prefix } from './config.js';
+import { debug, helpUrl, pluginsDir, prefix } from './config.js';
+import { findPluginFolders } from './repos.js';
 import { sections, usageLine, whoCanUse } from './help.js';
 import { checkAccess } from './permissions.js';
 import type { Command, Plugin, PluginFactory } from './plugin.js';
-import { commands, modules, plugins, resolveCommand } from './registry.js';
+import { commands, disabledPlugins, modules, plugins, resolveCommand } from './registry.js';
 
 const log = createLogger('plugins');
 
@@ -55,7 +55,11 @@ const help: Command = {
     const words = query ? query.split(/\s+/) : [];
     const name = words.length ? (words[0].startsWith(prefix) ? words[0].slice(prefix.length) : words[0]).toLowerCase() : '';
     const resolved = name ? resolveCommand(name, words.slice(1)) : null;
-    const section = name ? all.find((s) => s.id === name || s.title.toLowerCase() === name) : undefined;
+    // A plugin by full id (bitbot-plugins/addemote), short id (addemote) or display name. Short ids are
+    // unique: duplicates get disabled at load.
+    const section = name
+      ? all.find((s) => s.id === name || shortId(s.id) === name || s.title.toLowerCase() === name)
+      : undefined;
 
     // !help <command> [sub...]: details, plus related commands (a group's subcommands, or the rest of its plugin)
     if (resolved) {
@@ -99,7 +103,7 @@ const help: Command = {
       const list = await usable(s.commands);
       if (!list.length) continue;
       const value = s.id !== 'core'
-        ? `${s.description ?? ''}\n\`${prefix}help ${s.id}\` · ${list.length} command${list.length === 1 ? '' : 's'}`.trim()
+        ? `${s.description ?? ''}\n\`${prefix}help ${shortId(s.id)}\` · ${list.length} command${list.length === 1 ? '' : 's'}`.trim()
         : list.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n');
       embed.addFields({ name: s.title, value });
     }
@@ -124,32 +128,78 @@ function asPlugin(value: unknown): Plugin {
   return p;
 }
 
+type Candidate = Plugin & { id: string; source?: string };
+
+/** Last part of a plugin id: "bitbot-plugins/addemote" -> "addemote". */
+export const shortId = (id: string) => id.split('/').pop()!;
+
 /**
- * Load every PLUGINS_DIR/<id>/index.ts (TypeScript, run by tsx) and register its commands.
- * Core commands win name clashes; a broken plugin is logged and skipped, never fatal.
+ * Find plugins that can't safely load together. Two plugins claiming the same command (or a core
+ * command), or sharing a folder name across repos, are a configuration mistake: every plugin involved
+ * is disabled, so the clash gets noticed and fixed rather than half-working. Returns id -> reason.
+ */
+export function findClashes(candidates: Candidate[], coreNames: Set<string>) {
+  const reasons = new Map<string, string>();
+  const flag = (ids: string[], reason: string) => ids.forEach((id) => reasons.set(id, reasons.get(id) ?? reason));
+
+  const byCommand = new Map<string, string[]>();
+  const byShortId = new Map<string, string[]>();
+  for (const c of candidates) {
+    for (const cmd of new Set(c.commands.map((x) => x.name))) byCommand.set(cmd, [...(byCommand.get(cmd) ?? []), c.id]);
+    byShortId.set(shortId(c.id), [...(byShortId.get(shortId(c.id)) ?? []), c.id]);
+  }
+  for (const [cmd, ids] of byCommand) {
+    if (coreNames.has(cmd)) flag(ids, `\`${prefix}${cmd}\` is a core command`);
+    else if (ids.length > 1) flag(ids, `\`${prefix}${cmd}\` is provided by ${ids.join(' and ')}`);
+  }
+  for (const [name, ids] of byShortId) {
+    if (ids.length > 1) flag(ids, `the plugin name "${name}" is used by ${ids.join(' and ')}`);
+  }
+  return reasons;
+}
+
+/**
+ * Load every plugin in PLUGINS_DIR (TypeScript, run by tsx): top-level plugin folders, and plugin
+ * folders inside repo clones (see findPluginFolders). A broken plugin is logged and skipped. Clashing
+ * plugins are all disabled (see findClashes); with DEBUG=true the first one loaded wins instead.
  */
 export async function loadPlugins() {
-  const folders = await readdir(pluginsDir, { withFileTypes: true }).catch((error) => {
+  const folders = await findPluginFolders().catch((error) => {
     log.warn(`Can't read the plugins folder ${pluginsDir}; starting without plugins`, { error: String(error) });
     return [];
   });
-  for (const id of folders.filter((d) => d.isDirectory()).map((d) => d.name).sort()) {
+
+  // Pass 1: import everything that can be imported.
+  const candidates: Candidate[] = [];
+  for (const { id, dir, source } of folders) {
     try {
-      const factory: PluginFactory = (await import(pathToFileURL(join(pluginsDir, id, 'index.ts')).href)).default;
+      const factory: PluginFactory = (await import(pathToFileURL(join(dir, 'index.ts')).href)).default;
       if (typeof factory !== 'function') throw new Error('index.ts must default-export a function: (bot) => plugin');
-      const plugin = asPlugin(await factory(botApi));
-      for (const command of plugin.commands) {
-        if (commands.has(command.name)) {
-          log.warn(`Plugin "${id}": command "${command.name}" already exists, skipping it.`);
-          continue;
-        }
-        commands.set(command.name, command);
-      }
-      plugins.push({ ...plugin, id });
-      log.info(`Loaded plugin ${plugin.name} v${plugin.version} (${plugin.commands.length} commands)`);
+      candidates.push({ ...asPlugin(await factory(botApi)), id, source });
     } catch (error) {
-      log.error(`Failed to load plugin "${id}"`, error);
+      createLogger(id, 'plugin').error('Failed to load plugin', error);
+      disabledPlugins.push({ id, reason: `failed to load: ${error instanceof Error ? error.message : String(error)}` });
     }
+  }
+
+  // Pass 2: refuse clashes (unless debugging), then register.
+  const clashes = debug ? new Map<string, string>() : findClashes(candidates, new Set(commands.keys()));
+  for (const plugin of candidates) {
+    const clash = clashes.get(plugin.id);
+    if (clash) {
+      createLogger(plugin.id, 'plugin').error(`Disabled: ${clash}. Remove one of them, or set DEBUG=true to load the first.`);
+      disabledPlugins.push({ id: plugin.id, name: plugin.name, reason: clash });
+      continue;
+    }
+    for (const command of plugin.commands) {
+      if (commands.has(command.name)) {
+        log.warn(`Plugin "${plugin.id}": command "${command.name}" already exists, skipping it (DEBUG mode).`);
+        continue;
+      }
+      commands.set(command.name, command);
+    }
+    plugins.push(plugin);
+    log.info(`Loaded plugin ${plugin.name} v${plugin.version} from ${plugin.id} (${plugin.commands.length} commands)`);
   }
 }
 
@@ -158,9 +208,9 @@ export async function startPlugins(client: Client) {
   for (const p of plugins) {
     if (!p.setup) continue;
     try {
-      await p.setup({ client, log: createLogger(p.id) });
+      await p.setup({ client, log: createLogger(p.id, 'plugin') });
     } catch (error) {
-      log.error(`Plugin "${p.id}" setup failed`, error);
+      createLogger(p.id, 'plugin').error('Setup failed', error);
     }
   }
 }
@@ -172,7 +222,7 @@ export async function stopPlugins() {
     try {
       await p.stop();
     } catch (error) {
-      log.error(`Plugin "${p.id}" stop failed`, error);
+      createLogger(p.id, 'plugin').error('Stop failed', error);
     }
   }
 }

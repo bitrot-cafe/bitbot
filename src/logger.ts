@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { serializeError, type Client, type PermissionString } from '@fluxerjs/core';
+import { EmbedBuilder, serializeError, type Client, type PermissionString } from '@fluxerjs/core';
 import { debug, logChannelId } from './config.js';
 import { permissionLabel, permissionsIn } from './permissions.js';
 
@@ -39,7 +39,7 @@ export async function checkLogChannel(c: Client) {
     if (!guild) return "it isn't a channel in a server the bot is in";
     const me = guild.members.me ?? (await guild.members.fetchMe());
     const perms = permissionsIn(me, guild, logChannelId);
-    const needed: PermissionString[] = ['ViewChannel', 'SendMessages'];
+    const needed: PermissionString[] = ['ViewChannel', 'SendMessages', 'EmbedLinks'];
     const missing = needed.filter((p) => !perms.has(p));
     return missing.length ? `the bot is missing ${missing.map(permissionLabel).join(', ')} there` : null;
   })().catch((error) => `checking it failed: ${errorMessage(error)}`);
@@ -50,33 +50,70 @@ export async function checkLogChannel(c: Client) {
 /** Short message for an unknown thrown value. */
 export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-function emit(level: Level, scope: string, message: string, fields?: Fields, error?: unknown) {
+/** Who wrote a log line: a part of the core ("core", "repos", ...) or a plugin (its id). */
+export type Source = { kind: 'module' | 'plugin'; name: string };
+
+type Entry = { level: Level; source: Source; message: string; fields?: Fields; error?: unknown; ref?: string };
+
+const STYLE: Record<Exclude<Level, 'debug' | 'info'>, { emoji: string; color: number }> = {
+  notice: { emoji: '🔵', color: 0x3b82f6 },
+  warn: { emoji: '🟡', color: 0xeab308 },
+  error: { emoji: '🔴', color: 0xef4444 },
+};
+
+/** Fit text into an embed field: trimmed, wrapped in a code block. */
+const block = (text: string, lang = '') => `\`\`\`${lang}\n${text.length > 990 ? `${text.slice(0, 990)}…` : text}\n\`\`\``;
+
+/** The log-channel post for an entry: an embed with a colour bar per level. */
+function toEmbed({ level, source, message, fields, error, ref }: Entry) {
+  const style = STYLE[level as keyof typeof STYLE];
+  const embed = new EmbedBuilder()
+    .setTitle(`${style.emoji} ${level.toUpperCase()}`)
+    .setColor(style.color)
+    .setDescription(message.slice(0, 2000))
+    .setTimestamp()
+    .addFields({ name: source.kind === 'plugin' ? 'Plugin' : 'Module', value: `\`${source.name}\``, inline: true });
+  if (ref) embed.addFields({ name: 'Ref', value: `\`${ref}\``, inline: true });
+  if (error !== undefined) {
+    const text = error instanceof Error ? error.message : String(error);
+    embed.addFields({ name: 'Error', value: block(text) });
+    if (debugMode && error instanceof Error && error.stack) {
+      embed.addFields({ name: 'Stack', value: block(error.stack.split('\n').slice(1, 8).join('\n')) });
+    }
+  }
+  if (fields && Object.keys(fields).length) embed.addFields({ name: 'Details', value: block(JSON.stringify(fields, null, 2), 'json') });
+  return embed;
+}
+
+function emit(entry: Entry) {
+  const { level, source, message, fields, error, ref } = entry;
   if (level === 'debug' && !debugMode) return;
   const extra = { ...fields, ...(error === undefined ? {} : { error: serializeError(error) }) };
-  const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(5)} [${scope}] ${message}`;
+  const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(6)} [${source.name}] ${message}${ref ? ` (ref ${ref})` : ''}`;
   const out = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   Object.keys(extra).length ? out(line, extra) : out(line);
 
   // Only once connected: before login the API rejects us (startup errors stay console-only).
   if (client?.user && (level === 'notice' || level === 'warn' || level === 'error')) {
-    const details = Object.keys(extra).length ? `\n\`\`\`json\n${JSON.stringify(extra, null, 2).slice(0, 1500)}\n\`\`\`` : '';
     client.channels
-      .send(logChannelId, `**${level.toUpperCase()}** [${scope}] ${message}${details}`)
+      .send(logChannelId, { embeds: [toEmbed(entry)] })
       .catch((postError) => console.error('Could not post to the log channel:', postError)); // console only: no loop
   }
 }
 
-export function createLogger(scope: string) {
+/** A logger labelled with where its lines come from. Plugins get theirs with kind "plugin". */
+export function createLogger(name: string, kind: Source['kind'] = 'module') {
+  const source: Source = { kind, name };
   return {
-    debug: (message: string, fields?: Fields) => emit('debug', scope, message, fields),
-    info: (message: string, fields?: Fields) => emit('info', scope, message, fields),
+    debug: (message: string, fields?: Fields) => emit({ level: 'debug', source, message, fields }),
+    info: (message: string, fields?: Fields) => emit({ level: 'info', source, message, fields }),
     /** Like info, but also posted to the log channel. */
-    notice: (message: string, fields?: Fields) => emit('notice', scope, message, fields),
-    warn: (message: string, fields?: Fields) => emit('warn', scope, message, fields),
+    notice: (message: string, fields?: Fields) => emit({ level: 'notice', source, message, fields }),
+    warn: (message: string, fields?: Fields) => emit({ level: 'warn', source, message, fields }),
     /** Logs the error and returns a short reference ID to show users, so they can be matched up. */
     error: (message: string, error?: unknown, fields?: Fields): string => {
       const ref = randomBytes(3).toString('hex');
-      emit('error', scope, `${message} (ref ${ref})`, fields, error);
+      emit({ level: 'error', source, message, fields, error, ref });
       return ref;
     },
   };

@@ -9,7 +9,7 @@ import type { BotAPI } from './plugin.js';
 export const botApi: BotAPI = {
   fluxer,
   prefix,
-  createLogger,
+  createLogger: (name) => createLogger(name, 'plugin'),
   isBotAdmin,
   hasStaffFlag,
   permissionLabel,

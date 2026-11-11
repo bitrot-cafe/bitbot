@@ -6,8 +6,14 @@ export type Module = { id: string; title: string; description?: string; commands
 /** Built-in modules, in display order. Filled by commands.ts. */
 export const modules: Module[] = [];
 
-/** Loaded plugins, in load order (alphabetical by folder). `id` is the folder name. */
-export const plugins: (Plugin & { id: string })[] = [];
+/**
+ * Loaded plugins, in load order. `id` is the folder path under PLUGINS_DIR ("whoami", or
+ * "bitbot-plugins/addemote" for a plugin in a repo); `source` is the repo it came from, if any.
+ */
+export const plugins: (Plugin & { id: string; source?: string })[] = [];
+
+/** Plugins that were found but not loaded, and why (shown by !admin plugins list). */
+export const disabledPlugins: { id: string; name?: string; reason: string }[] = [];
 
 /** Every top-level command, by name: built-ins plus those from plugins. */
 export const commands = new Map<string, Command>();

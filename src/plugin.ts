@@ -71,8 +71,8 @@ export type BotAPI = {
   fluxer: typeof import('@fluxerjs/core');
   /** The command prefix, for usage hints. */
   prefix: string;
-  /** Extra scoped loggers (setup's ctx.log is already scoped to the plugin). */
-  createLogger: typeof createLogger;
+  /** A logger labelled as this plugin in the log channel (setup's ctx.log is one already). */
+  createLogger: (name: string) => ReturnType<typeof createLogger>;
   isBotAdmin: typeof isBotAdmin;
   hasStaffFlag: typeof hasStaffFlag;
   /** Fluxer UI name for a permission: "CreateExpressions" -> "Create emoji & stickers". */

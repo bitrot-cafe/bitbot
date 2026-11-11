@@ -6,3 +6,4 @@ services:
     env_file: .env
     volumes:
       - .:/app:z
+    restart: unless-stopped # brings the bot back after a crash

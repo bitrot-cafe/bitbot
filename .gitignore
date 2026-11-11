@@ -2,7 +2,13 @@ node_modules/
 dist/
 .env
 
-# Plugins managed in their own repo for now
-plugins/addemote/
-plugins/access-sync/
+# Bot-managed: plugin repo clones and plugins.json (see examples/ for the example plugin)
+plugins/
 public/
+
+# Editor swap/backup files (an .env swap file holds secrets)
+*.swp
+*.swo
+*~
+.env.*
+!.env.example
