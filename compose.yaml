@@ -1,3 +1,5 @@
+name: bitbot-dev # distinct from the production project "bitbot"
+
 services:
   bot:
     build:

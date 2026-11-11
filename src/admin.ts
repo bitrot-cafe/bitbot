@@ -7,7 +7,7 @@ import { createLogger, isDebug, setDebug } from './logger.js';
 import { permissionLabel } from './permissions.js';
 import type { Command } from './plugin.js';
 import { disabledPlugins, leaves, plugins, type Module } from './registry.js';
-import { abortAdd, applyUpdates, finishAdd, listRepos, previewUpdates, removeRepo, startAdd } from './repos.js';
+import { abortAdd, applyUpdates, finishAdd, listRepos, previewUpdates, readManifest, removeRepo, startAdd } from './repos.js';
 import { setStatusTemplate } from './status.js';
 
 /* Bot administration. Everything here is bot-admin only (inherited from the `admin` group). */
@@ -36,6 +36,9 @@ const pluginsInfo: Command = {
     const p = plugins[Number(n) - 1];
     if (!p) return message.reply(`No plugin #${n ?? '?'}. See \`${prefix}admin plugins list\`.`);
     const all = p.commands.flatMap(leaves);
+    // The repo the bot installed it from wins; a plugin's own `repo` field covers local folders.
+    const managed = p.source ? (await readManifest().catch(() => [])).find((r) => r.name === p.source) : undefined;
+    const repo = managed ? `[${managed.name}](${managed.url})${managed.ref ? ` (${managed.ref})` : ''}` : (p.repo ?? '— (local folder)');
     const perms = [...new Set(all.flatMap((c) => c.botPermissions ?? []))];
     const embed = new EmbedBuilder()
       .setTitle(p.name)
@@ -44,8 +47,7 @@ const pluginsInfo: Command = {
         { name: 'Version', value: `v${p.version}`, inline: true },
         { name: 'Author', value: p.author, inline: true },
         { name: 'Folder', value: `\`plugins/${p.id}\``, inline: true },
-        { name: 'From repo', value: p.source ?? '— (local folder)', inline: true },
-        { name: 'Repo', value: p.repo ?? '—' },
+        { name: 'Repo', value: repo },
         { name: 'Commands', value: all.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n') },
         { name: 'Bot permissions', value: perms.length ? perms.map(permissionLabel).join(', ') : '—' },
       );

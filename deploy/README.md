@@ -6,35 +6,48 @@ checkout of the plugin repo. The files here are templates for `/opt/bitbot` on t
 ## First install
 
 ```sh
-sudo mkdir -p /opt/bitbot && cd /opt/bitbot
+sudo mkdir -p /opt/bitbot/plugins /opt/bitbot/public && cd /opt/bitbot
 sudo cp <this repo>/deploy/compose.yaml .
 sudo cp <this repo>/deploy/env.example .env && sudo chown root:docker .env && sudo chmod 660 .env
-sudo $EDITOR .env                                  # token, instance, plugin settings
-sudo git clone <plugin repo> plugins               # one folder per plugin
-sudo mkdir -p public && sudo chown 1000:1000 public  # the bot runs as uid 1000 (node)
+sudo $EDITOR .env                                    # token, instance, plugin settings
+sudo chown -R 1000:1000 plugins public               # the bot runs as uid 1000 (node) and manages plugins/
+docker compose up -d && docker compose logs -f
 ```
 
-Install plugin dependencies **inside the image**, so native modules like sharp match its Alpine/musl.
-The service mounts plugins read-only, so this one-off run mounts them writable, as root:
+Then add plugin repos **from chat**, as a bot administrator:
 
-```sh
-docker run --rm --user root -v "$PWD/plugins:/app/plugins" "$(docker compose config --images)" \
-  sh -c 'for d in plugins/*/; do [ -f "$d/package.json" ] && (cd "$d" && npm install --omit=dev); done'
-docker compose up -d
-docker compose logs -f
+```
+!admin plugins add https://github.com/bitrot-cafe/bitbot-plugins
+```
+
+The bot clones the repo, lists its plugins, and after you react ✅ installs their dependencies (inside the
+image, so native modules match), records the repo in `plugins/plugins.json`, and restarts. On a fresh host
+you can instead drop a `plugins/plugins.json` in place before `up -d`. The bot clones every repo listed
+there on startup:
+
+```json
+[{ "name": "bitbot-plugins", "url": "https://github.com/bitrot-cafe/bitbot-plugins" }]
 ```
 
 ## Updating
 
-- **Core:** tag a release in this repo (`git tag v0.2.0 && git push --tags`). CI publishes
+- **Core:** tag a release in this repo (`git tag -a v0.2.0 -m … && git push origin v0.2.0`). CI publishes
   `ghcr.io/bitrot-cafe/bitbot:0.2.0`. Bump the tag in `compose.yaml`, then `docker compose pull && docker compose up -d`.
-- **Plugins:** `git -C plugins pull`, re-run the dependency install if a `package.json` changed, then
-  `docker compose restart`.
+- **Plugins:** `!admin plugins update` (all repos) or `!admin plugins update <repo>`. It shows the new
+  commits, and ✅ applies them and restarts. `!admin plugins repos` shows what's installed;
+  `!admin plugins remove <repo>` uninstalls.
+
+## Security
+
+Any bot administrator can make the bot download and run code from any HTTPS git repo, and plugins run with
+the bot's token and the whole `.env`. Treat bot administrators (and instance staff, with
+`TRUST_INSTANCE_STAFF=true`) as fully trusted, and only add repos you trust. Every add, update, remove and
+restart is posted to the log channel.
 
 ## SELinux
 
 If the host enforces SELinux **and** Docker runs with `selinux-enabled`, add `:z` to both mounts in
-`compose.yaml` (e.g. `./plugins:/app/plugins:ro,z`), or the container can't read them.
+`compose.yaml` (e.g. `./plugins:/app/plugins:z`), or the container can't read them.
 
 ## Image access
 

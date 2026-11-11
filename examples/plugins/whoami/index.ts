@@ -80,6 +80,7 @@ const plugin: PluginFactory = (bot) => {
     name: 'Who Am I',
     version: '0.1.0',
     author: 'UVClay',
+    repo: 'https://github.com/bitrot-cafe/bitbot-plugins',
     description: 'Shows a user (default: the caller) their identity, bot administrator/staff status, and server roles and permissions.',
     commands: [whoami],
   };

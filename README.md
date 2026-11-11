@@ -50,13 +50,36 @@ links to it. In the dev container the project folder is `/app`, so `public/help.
 
 ## Plugins
 
-Plugins load **at runtime** from `PLUGINS_DIR` (default `./plugins`), one folder each. They're TypeScript,
-run by tsx in both dev and production, so there's no build step. Plugins live in their own repo(s); the bot
-loads whatever is in the folder.
+Plugins come from **plugin repos**, installed and updated by the bot itself. The official one is
+[bitbot-plugins](https://github.com/bitrot-cafe/bitbot-plugins). As a bot administrator:
+
+| Command | What it does |
+|---|---|
+| `!admin plugins add <https-url> [branch\|tag]` | Clone a repo, list its plugins, and load them after you react ✅ |
+| `!admin plugins update [repo]` | Fetch, show the new commits, and apply them after you react ✅ |
+| `!admin plugins remove <repo>` | Uninstall a repo after you react ✅ |
+| `!admin plugins repos` | Installed repos, their commits and plugins |
+| `!admin plugins list` / `info <n>` | Loaded plugins (and any that were disabled, with the reason) |
+| `!admin restart` | Restart the bot (plugins load at startup) |
+
+Everything lives in `PLUGINS_DIR` (default `./plugins`, git-ignored). `plugins.json` lists the repos, and
+any missing from disk are re-cloned on startup. Each repo clone holds one or more plugin folders. A plugin
+folder placed directly in `PLUGINS_DIR` also loads, which is handy for local experiments.
+
+**Guardrail:** if two plugins claim the same command, a core command, or the same plugin name in two
+repos, **all of them are disabled** and the clash is reported to the log channel. Fix the config rather
+than relying on load order. `DEBUG=true` turns this off (first one loaded wins).
+
+**Security:** any bot administrator can make the bot run code from any HTTPS repo, and plugins run with the
+bot's token and the whole `.env`. Treat bot administrators (and instance staff, with
+`TRUST_INSTANCE_STAFF=true`) as fully trusted. Every add, update, remove and restart is posted to the log channel.
+
+### Writing a plugin
 
 A plugin folder has an `index.ts` that default-exports a **factory**. The bot calls it with `bot`, its helper
-API. A plugin imports only **types** from the bot (`import type`, erased at runtime), so it works wherever its
-folder is mounted:
+API. Start from [`examples/plugins/whoami`](examples/plugins/whoami), which isn't loaded by default and isn't
+in the image. A plugin imports only **types** from the bot (`import type`, erased at runtime), so it works
+from any repo:
 
 ```ts
 import type { PluginFactory } from 'bitbot';
@@ -89,26 +112,17 @@ export default plugin;
   list is the `BotAPI` type in `src/plugin.ts`.
 - **Don't import runtime values from `@fluxerjs/core` or the bot.** Use `bot.fluxer.*` and `bot.*`.
   `import type` is fine.
-- **Dependencies:** give the folder its own `package.json` (with `"type": "module"`) and install them
-  there, inside the container, so native modules like sharp match the image's OS:
-  `podman compose run --rm bot sh -c 'cd plugins/<id> && npm install --omit=dev'`.
-- **Type-checking in a plugin repo:** map `bitbot` to a checkout of this repo,
-  `"paths": { "bitbot": ["../bitbot/src/plugin.ts"] }`, and add `@fluxerjs/core` as a dev dependency.
-
-Plugins load alphabetically by folder. If two commands share a name, the first one loaded wins (core
-commands always win), and the clash is logged. A plugin that fails to load is logged and skipped.
+- **Dependencies:** give the plugin folder its own `package.json` (with `"type": "module"`). The bot runs
+  `npm install --omit=dev` there when the repo is added, or when an update changes it.
+- **Command names must be unique** across everything the bot loads (see the guardrail above).
+- **Type-checking in a plugin repo:** map `bitbot` to this repo's `src/plugin.ts` and add `@fluxerjs/core`
+  as a dev dependency. See bitbot-plugins' `tsconfig.json`.
 
 ## Production
 
-The `prod` image target is a plain OCI image (works with Docker or Podman). It ships the core and tsx;
-**plugins are mounted**, not baked in:
-
-```sh
-podman build --target prod -t bitbot .
-podman run --env-file .env -v ./plugins:/app/plugins bitbot
-```
-
-To keep the web help page, mount a writable folder at `/app/public` and set `HELP_PAGE_PATH=public/help.html`.
+The `prod` image (`ghcr.io/bitrot-cafe/bitbot:<version>`, published by CI on version tags) is a plain OCI
+image that ships the core, tsx and git. **Plugins aren't baked in:** the bot manages them in a writable
+`/app/plugins`. See [deploy/README.md](deploy/README.md) for the compose setup.
 
 ## License
 
