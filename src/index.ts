@@ -2,11 +2,12 @@ import { Client, EmbedBuilder, Events, parsePrefixCommand } from '@fluxerjs/core
 import { loadPlugins, startPlugins, stopPlugins } from './commands.js';
 import { instance, prefix, token } from './config.js';
 import { groupUsage, writeHelpPage } from './help.js';
+import { build } from './build.js';
 import { botInviteUrl } from './invite.js';
 import { onShutdown, shutdown } from './lifecycle.js';
 import { attachLogChannel, checkLogChannel, createLogger, errorMessage, isDebug } from './logger.js';
 import { checkAccess, loadApplicationOwner, permissionErrorReply } from './permissions.js';
-import { disabledPlugins, resolveCommand } from './registry.js';
+import { disabledPlugins, plugins, resolveCommand } from './registry.js';
 import { ensureRepos } from './repos.js';
 import { startStatus } from './status.js';
 
@@ -41,13 +42,17 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => 
 
 client.on(Events.Ready, () => {
   loadApplicationOwner(client).catch((error) => log.error('Could not look up the application owner', error));
-  log.info(`Logged in as ${client.user?.username} (prefix "${prefix}")`);
+  log.info(`Logged in as ${client.user?.username} (prefix "${prefix}", bitbot ${build.version} @ ${build.commit})`);
   checkLogChannel(client);
   if (disabledPlugins.length) {
     // Repeated now that we're connected, so it reaches the log channel (load-time logs can't).
     log.warn(`${disabledPlugins.length} plugin(s) not loaded`, {
       plugins: disabledPlugins.map((p) => `${p.id}: ${p.reason}`),
     });
+  }
+  const undeclared = plugins.filter((p) => !p.api).map((p) => p.id);
+  if (undeclared.length) {
+    log.notice(`${undeclared.length} plugin(s) don't declare a bot API version`, { plugins: undeclared });
   }
   writeHelpPage(client.user?.username ?? 'Bot');
   if (client.guilds.size === 0) {
@@ -68,7 +73,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (!resolved) return;
   const { command, args, depth } = resolved;
   // The text after the command path, spacing kept: drop the prefix, then one word per path level.
-  let rest = message.content.slice(prefix.length).trimStart();
+  let rest = message.content.trim().slice(prefix.length).trimStart(); // trimmed like parsePrefixCommand
   for (let i = 0; i < depth; i++) rest = rest.replace(/^\S+\s*/, '');
 
   try {

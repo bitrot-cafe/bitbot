@@ -63,6 +63,11 @@ export type { Logger };
 /** Core helpers handed to every plugin. */
 export type BotAPI = {
   /**
+   * The plugin API version this bot implements ("major.minor"). Declare what your plugin needs in its
+   * package.json, `"bitbot": { "api": "1.0" }`: same major, and at most this minor, or it won't load.
+   */
+  apiVersion: string;
+  /**
    * The Fluxer library (@fluxerjs/core), the same instance the core uses. Use this for runtime values
    * (EmbedBuilder, Events, parseUserMention, ...) instead of importing the package: a plugin folder
    * mounted outside the bot can't resolve it, and a second copy wouldn't match the core's objects.

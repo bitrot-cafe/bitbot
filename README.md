@@ -115,8 +115,43 @@ export default plugin;
 - **Dependencies:** give the plugin folder its own `package.json` (with `"type": "module"`). The bot runs
   `npm install --omit=dev` there when the repo is added, or when an update changes it.
 - **Command names must be unique** across everything the bot loads (see the guardrail above).
+- **Declare the bot API version** your plugin needs (see below).
 - **Type-checking in a plugin repo:** map `bitbot` to this repo's `src/plugin.ts` and add `@fluxerjs/core`
   as a dev dependency. See bitbot-plugins' `tsconfig.json`.
+
+### Plugin API versions
+
+The plugin API (the `bot` object and the plugin format) has a version, `major.minor`, currently **1.0**
+(`src/version.ts`). The **minor** goes up when the API only gains things; the **major** goes up on breaking
+changes. A plugin declares what it needs in its folder's `package.json`:
+
+```json
+{ "name": "my-plugin", "type": "module", "bitbot": { "api": "1.0" } }
+```
+
+`"1.0"` means "1.0 or later, but not 2.0". The bot checks this **before running any of the plugin's code**:
+
+| Plugin declares | Result |
+|---|---|
+| A compatible version (same major, minor ≤ the bot's) | loads |
+| Nothing | loads, with a warning in the log channel |
+| An incompatible version | **not loaded**; listed under "Not loaded" in `!admin plugins list`. `DEBUG=true` loads it anyway, with a warning. |
+
+`!admin plugins add` and `update` show each plugin's compatibility (✅ / ⚠️ / ⛔) **before** you confirm.
+
+## Development vs production bots
+
+Run development on its own Fluxer application, so testing never touches the real bot:
+
+| | Production (Bitbot) | Development (Breakbot) |
+|---|---|---|
+| Runs from | the published image (`deploy/`) | this checkout (`podman compose up`) |
+| Token | its own application | a separate application |
+| Prefix | `!` | `??` (`PREFIX=??`), so it can share guilds without answering the same commands |
+| Guilds | the real ones | a dev guild, plus real ones for realistic tests |
+| Log channel | the ops channel | a channel in the dev guild |
+
+Separate tokens mean both can run at the same time.
 
 ## Production
 

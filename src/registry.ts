@@ -10,7 +10,7 @@ export const modules: Module[] = [];
  * Loaded plugins, in load order. `id` is the folder path under PLUGINS_DIR ("whoami", or
  * "bitbot-plugins/addemote" for a plugin in a repo); `source` is the repo it came from, if any.
  */
-export const plugins: (Plugin & { id: string; source?: string })[] = [];
+export const plugins: (Plugin & { id: string; source?: string; api?: string })[] = [];
 
 /** Plugins that were found but not loaded, and why (shown by !admin plugins list). */
 export const disabledPlugins: { id: string; name?: string; reason: string }[] = [];

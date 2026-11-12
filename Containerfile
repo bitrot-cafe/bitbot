@@ -16,6 +16,10 @@ FROM docker.io/library/node:22-alpine AS prod
 # git: the bot clones and updates plugin repos itself (!admin plugins add/update). npm ships with node.
 RUN apk add --no-cache git
 ENV NODE_ENV=production
+# Set by CI (image.yml); shown in logs, and in the status while debug mode is on.
+ARG BITBOT_VERSION=unknown
+ARG BITBOT_COMMIT=unknown
+ENV BITBOT_VERSION=$BITBOT_VERSION BITBOT_COMMIT=$BITBOT_COMMIT
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./

@@ -8,11 +8,29 @@ import { permissionLabel } from './permissions.js';
 import type { Command } from './plugin.js';
 import { disabledPlugins, leaves, plugins, type Module } from './registry.js';
 import { abortAdd, applyUpdates, finishAdd, listRepos, previewUpdates, readManifest, removeRepo, startAdd } from './repos.js';
-import { setStatusTemplate } from './status.js';
+import { refreshStatus, setStatusTemplate } from './status.js';
+import { API_VERSION, checkApiVersion } from './version.js';
 
 /* Bot administration. Everything here is bot-admin only (inherited from the `admin` group). */
 
 const log = createLogger('admin');
+
+/** One line per plugin with its API compatibility, for the add/update prompts. */
+function compatList(found: { id: string; api?: string }[]) {
+  if (!found.length) return '  **no plugins**';
+  return found
+    .map(({ id, api }) => {
+      const c = checkApiVersion(api);
+      const note =
+        c.status === 'ok'
+          ? `✅ API ${api}`
+          : c.status === 'undeclared'
+            ? '⚠️ doesn\'t declare an API version (loads with a warning)'
+            : `⛔ ${c.reason}: **will be disabled**`;
+      return `  • \`${id}\`: ${note}`;
+    })
+    .join('\n');
+}
 const who = (m: { author: { username: string; id: string } }) => `${m.author.username} (${m.author.id})`;
 
 const pluginsList: Command = {
@@ -48,6 +66,7 @@ const pluginsInfo: Command = {
         { name: 'Author', value: p.author, inline: true },
         { name: 'Folder', value: `\`plugins/${p.id}\``, inline: true },
         { name: 'Repo', value: repo },
+        { name: 'API', value: `${p.api ? `needs ${p.api}` : 'not declared'} · this bot has ${API_VERSION}`, inline: true },
         { name: 'Commands', value: all.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n') },
         { name: 'Bot permissions', value: perms.length ? perms.map(permissionLabel).join(', ') : '—' },
       );
@@ -91,7 +110,7 @@ const add: Command = {
     const { entry, plugins: found, commit } = added;
     const { ok, prompt } = await confirm(
       message,
-      `**${entry.name}** at \`${commit}\` contains ${found.length ? found.map((p) => `\`${p}\``).join(', ') : '**no plugins**'}.\n` +
+      `**${entry.name}** at \`${commit}\` contains:\n${compatList(found)}\n` +
         `⚠️ Plugins run with the bot's token and settings. Only add code you trust.\nInstall and restart to load it?`,
     );
     if (!ok) {
@@ -146,7 +165,8 @@ const update: Command = {
           `**${u.name}** \`${u.from.slice(0, 7)}\` → \`${u.to.slice(0, 7)}\` (${u.count} commit${u.count === 1 ? '' : 's'}` +
           `${u.depsChanged ? ', dependencies changed' : ''})\n` +
           u.commits.map((c) => `  • ${c}`).join('\n') +
-          (u.count > u.commits.length ? `\n  • …and ${u.count - u.commits.length} more` : ''),
+          (u.count > u.commits.length ? `\n  • …and ${u.count - u.commits.length} more` : '') +
+          `\n  After the update:\n${compatList(u.plugins).replace(/^  /gm, '    ')}`,
       )
       .join('\n');
     const { ok, prompt } = await confirm(message, `${summary}\n\nApply and restart?`);
@@ -188,7 +208,10 @@ const debug: Command = {
   description: 'Show or toggle debug mode: debug logs, and error details in replies. Not kept across restarts.',
   usage: '[on|off]',
   run: async (message, [mode]) => {
-    if (mode === 'on' || mode === 'off') setDebug(mode === 'on');
+    if (mode === 'on' || mode === 'off') {
+      setDebug(mode === 'on');
+      refreshStatus(message.client); // status shows "DEBUG: commit …" while debug is on
+    }
     return message.reply(
       `Debug mode is **${isDebug() ? 'on' : 'off'}**${isDebug() ? ': debug logs shown, error details included in replies.' : '.'}`,
     );

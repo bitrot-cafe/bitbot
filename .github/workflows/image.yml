@@ -58,6 +58,9 @@ jobs:
           context: .
           file: Containerfile
           target: prod
+          build-args: |
+            BITBOT_VERSION=${{ steps.meta.outputs.version }}
+            BITBOT_COMMIT=${{ github.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -7,6 +7,7 @@ import { createLogger } from './logger.js';
 import { botApi } from './api.js';
 import { debug, helpUrl, pluginsDir, prefix } from './config.js';
 import { findPluginFolders } from './repos.js';
+import { checkApiVersion } from './version.js';
 import { sections, usageLine, whoCanUse } from './help.js';
 import { checkAccess } from './permissions.js';
 import type { Command, Plugin, PluginFactory } from './plugin.js';
@@ -128,7 +129,7 @@ function asPlugin(value: unknown): Plugin {
   return p;
 }
 
-type Candidate = Plugin & { id: string; source?: string };
+type Candidate = Plugin & { id: string; source?: string; api?: string };
 
 /** Last part of a plugin id: "bitbot-plugins/addemote" -> "addemote". */
 export const shortId = (id: string) => id.split('/').pop()!;
@@ -171,11 +172,23 @@ export async function loadPlugins() {
 
   // Pass 1: import everything that can be imported.
   const candidates: Candidate[] = [];
-  for (const { id, dir, source } of folders) {
+  for (const { id, dir, source, api } of folders) {
+    // Checked before import, so an incompatible plugin's code never runs (unless DEBUG=true).
+    const check = checkApiVersion(api);
+    if (check.status === 'incompatible') {
+      if (!debug) {
+        createLogger(id, 'plugin').error(`Not loaded: ${check.reason}. Update the plugin, or set DEBUG=true to load it anyway.`);
+        disabledPlugins.push({ id, reason: check.reason });
+        continue;
+      }
+      createLogger(id, 'plugin').warn(`Loading anyway (DEBUG mode): ${check.reason}`);
+    } else if (check.status === 'undeclared') {
+      createLogger(id, 'plugin').warn('Doesn\'t declare a bot API version ("bitbot": { "api": "x.y" } in its package.json)');
+    }
     try {
       const factory: PluginFactory = (await import(pathToFileURL(join(dir, 'index.ts')).href)).default;
       if (typeof factory !== 'function') throw new Error('index.ts must default-export a function: (bot) => plugin');
-      candidates.push({ ...asPlugin(await factory(botApi)), id, source });
+      candidates.push({ ...asPlugin(await factory(botApi)), id, source, api });
     } catch (error) {
       createLogger(id, 'plugin').error('Failed to load plugin', error);
       disabledPlugins.push({ id, reason: `failed to load: ${error instanceof Error ? error.message : String(error)}` });

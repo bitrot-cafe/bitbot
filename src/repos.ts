@@ -19,12 +19,26 @@ const exec = promisify(execFile);
 const MANIFEST = () => join(pluginsDir, 'plugins.json');
 
 export type RepoEntry = { name: string; url: string; ref?: string };
-export type PluginFolder = { id: string; dir: string; source?: string };
+/** `api`: the bot API version the plugin declares in package.json ("bitbot": { "api": "1.0" }), if any. */
+export type PluginFolder = { id: string; dir: string; source?: string; api?: string };
 
 // ---- Folder scan (shared with the plugin loader) -------------------------------------------------
 
 const skipped = (name: string) => name.startsWith('.') || name === 'node_modules';
 const exists = (path: string) => access(path).then(() => true, () => false);
+
+/** The `bitbot.api` field of a package.json's text; undefined if absent or unreadable. */
+export function declaredApi(packageJson: string | null): string | undefined {
+  if (!packageJson) return undefined;
+  try {
+    const api = JSON.parse(packageJson)?.bitbot?.api;
+    return typeof api === 'string' ? api : undefined;
+  } catch {
+    return undefined; // malformed package.json: treated as undeclared
+  }
+}
+
+const readApi = async (dir: string) => declaredApi(await readFile(join(dir, 'package.json'), 'utf8').catch(() => null));
 
 async function subfolders(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -41,11 +55,13 @@ export async function findPluginFolders(root = pluginsDir): Promise<PluginFolder
   for (const name of await subfolders(root)) {
     const dir = join(root, name);
     if (await exists(join(dir, 'index.ts'))) {
-      found.push({ id: name, dir });
+      found.push({ id: name, dir, api: await readApi(dir) });
       continue;
     }
     for (const sub of await subfolders(dir)) {
-      if (await exists(join(dir, sub, 'index.ts'))) found.push({ id: `${name}/${sub}`, dir: join(dir, sub), source: name });
+      if (await exists(join(dir, sub, 'index.ts'))) {
+        found.push({ id: `${name}/${sub}`, dir: join(dir, sub), source: name, api: await readApi(join(dir, sub)) });
+      }
     }
   }
   return found;
@@ -180,7 +196,7 @@ export async function startAdd(rawUrl: string, ref?: string) {
     throw new Error(`plugins/${entry.name} already exists`);
   }
   await clone(entry);
-  const plugins = (await findPluginFolders()).filter((f) => f.source === entry.name).map((f) => f.id);
+  const plugins = (await findPluginFolders()).filter((f) => f.source === entry.name);
   const commit = await git(repoDir(entry.name), 'log', '-1', '--format=%h %s');
   return { entry, plugins, commit };
 }
@@ -199,7 +215,30 @@ export async function removeRepo(name: string) {
   await writeManifest(entries.filter((e) => e.name !== name));
 }
 
-export type PendingUpdate = { name: string; from: string; to: string; count: number; commits: string[]; depsChanged: boolean };
+export type PendingUpdate = {
+  name: string;
+  from: string;
+  to: string;
+  count: number;
+  commits: string[];
+  depsChanged: boolean;
+  /** Plugins as they'll be after the update (read from git, before checking out). */
+  plugins: { id: string; api?: string }[];
+};
+
+/** The plugin folders in a repo at `commit` (top-level folders with an index.ts), with their declared API. */
+async function pluginsAt(name: string, commit: string) {
+  const dir = repoDir(name);
+  const tops = (await git(dir, 'ls-tree', '-d', '--name-only', commit)).split('\n').filter((n) => n && !skipped(n));
+  const found: { id: string; api?: string }[] = [];
+  for (const sub of tops) {
+    const hasIndex = await git(dir, 'cat-file', '-e', `${commit}:${sub}/index.ts`).then(() => true, () => false);
+    if (!hasIndex) continue;
+    const pkg = await git(dir, 'show', `${commit}:${sub}/package.json`).catch(() => null);
+    found.push({ id: `${name}/${sub}`, api: declaredApi(pkg) });
+  }
+  return found;
+}
 
 /** Fetch and describe what an update would change. Repos already up to date are left out. */
 export async function previewUpdates(only?: string): Promise<PendingUpdate[]> {
@@ -220,6 +259,7 @@ export async function previewUpdates(only?: string): Promise<PendingUpdate[]> {
       count: Number(await git(dir, 'rev-list', '--count', range)),
       commits: (await git(dir, 'log', '--format=%h %s', '-n', '10', range)).split('\n').filter(Boolean),
       depsChanged: (await git(dir, 'diff', '--name-only', from, to, '--', '*package.json', '*package-lock.json')) !== '',
+      plugins: await pluginsAt(e.name, to),
     });
   }
   return pending;
