@@ -1,12 +1,12 @@
 # Deploying bitbot
 
-Production runs the published image `ghcr.io/bitrot-cafe/bitbot:<version>` with plugins mounted from a
-checkout of the plugin repo. The files here are templates for `/opt/bitbot` on the host.
+Production runs the published image `ghcr.io/bitrot-cafe/bitbot:<version>`. The bot clones and manages
+its plugin repos itself, in a mounted folder. The files here are templates for `/opt/bitbot` on the host.
 
 ## First install (Postgres)
 
 ```sh
-sudo mkdir -p /opt/bitbot/{plugins,public,pgdata,secrets} && cd /opt/bitbot
+sudo mkdir -p /opt/bitbot/{plugins/local,plugins/repos,public,pgdata,secrets} && cd /opt/bitbot
 sudo cp <this repo>/deploy/compose.yaml .
 sudo cp <this repo>/deploy/env.example .env && sudo chown root:docker .env && sudo chmod 660 .env
 
@@ -18,8 +18,8 @@ printf '%s' '<the bot token>'                            | sudo tee secrets/flux
 sudo chown root:docker secrets/* && sudo chmod 640 secrets/*  # readable by the containers, not by everyone
 
 sudo chown -R 1000:1000 plugins public                   # the bot runs as uid 1000 (node)
-sudo cp permissions.example.yaml permissions.yaml        # who administers the bot; edit it (see below)
-docker compose up -d && docker compose logs -f bot       # look for "Database: postgres", "applied 0001_init"
+sudo cp <this repo>/permissions.example.yaml permissions.yaml   # who administers the bot; edit it (see below)
+docker compose up -d && docker compose logs -f bot       # look for "Database: postgres", "applied 0001_init, 0002_plugins"
 ```
 
 `permissions.yaml` (mounted read-only) lists who holds the bot roles: **root** (plugins, restarts, debug
@@ -27,19 +27,21 @@ mode) and **admin** (settings, status, audit log). The application owner is alwa
 The bot reads it at startup, so restart after editing it. Then, as bot root in chat:
 
 ```
+!root plugins list                                                # ping is enabled on a new bot
 !root plugins add https://github.com/bitrot-cafe/bitbot-plugins   # makes its plugins available
 !root plugins enable whoami                                       # opt in, one plugin at a time
 !admin config                                   # every settings scope; ⚠️ marks missing required ones
 !admin config set core log_channel <channel id>
 ```
 
-Adding a repo clones it and lists its plugins; it **enables nothing**. `enable` installs that plugin's
-dependencies, records it in `plugins/plugins.json` and restarts. On a fresh host you can instead put a
-`plugins/plugins.json` in place before `up -d`; the bot clones every repo listed there on startup:
+Adding a repo clones it and lists its plugins; it **enables nothing**. `enable` shows the plugin's
+dependencies (if any), and ✅ approves and installs them and loads the plugin, without a restart. Which
+repos and plugins are installed is kept in the database, not on disk: `plugins/repos/` is rebuilt from it
+on every start (missing clones re-cloned, local changes discarded), so back up the database, not that
+folder. Put your own plugins in `plugins/local/<plugin>` and enable them as `local/<plugin>`.
 
-```json
-[{ "name": "bitbot-plugins", "url": "https://github.com/bitrot-cafe/bitbot-plugins", "enabled": ["whoami", "addemote"] }]
-```
+**A plugin breaks the bot?** Add `SAFE_MODE=true` to `.env`, `docker compose up -d` (the bot starts with no
+plugins), `!root plugins disable <plugin>`, then remove `SAFE_MODE` and `up -d` again.
 
 ### Plugin secrets
 
@@ -79,14 +81,14 @@ copies in one transaction, and checks row counts.
 
 ## Updating
 
-- **Core:** tag a release in this repo (`git tag -a v0.3.0 -m … && git push origin v0.3.0`). CI publishes
-  `ghcr.io/bitrot-cafe/bitbot:0.3.0`. Bump the tag in `compose.yaml`, then `docker compose pull && docker compose up -d`.
+- **Core:** tag a release in this repo (`git tag -a v0.4.0 -m … && git push origin v0.4.0`). CI publishes
+  `ghcr.io/bitrot-cafe/bitbot:0.4.0`. Bump the tag in `compose.yaml`, then `docker compose pull && docker compose up -d`.
   Database migrations run automatically at startup (on SQLite and Postgres alike).
   With Podman's `podman-compose` and a floating tag (`:0`), recreate explicitly: `pull && down && up -d`.
 - **Settings:** `!admin config` (persisted in the database; no restart, except where marked).
 - **Plugins:** `!root plugins update` (all repos) or `!root plugins update <repo>`. It shows the new
-  commits, and ✅ applies them and restarts. `!root plugins repos` shows what's installed;
-  `!root plugins remove <repo>` uninstalls.
+  commits and any changed dependencies; ✅ applies (and approves) them and restarts.
+  `!root plugins repos` shows what's installed; `!root plugins remove <repo>` uninstalls.
 - **Who administers the bot:** edit `permissions.yaml`, then `docker compose restart bot`.
 
 ## Security
@@ -101,7 +103,7 @@ mounted read-only, so nothing in chat can change who holds a role.
 
 If the host enforces SELinux **and** the container runtime labels mounts (Podman; Docker with
 `selinux-enabled`):
-- add `:z` to the plugin, public, data and permissions mounts in `compose.yaml` (e.g. `./plugins:/app/plugins:z`,
+- add `:z` to the plugin, public, data and permissions mounts in `compose.yaml` (e.g. `./plugins/repos:/app/plugins/repos:z`,
   `./permissions.yaml:/app/permissions.yaml:ro,z`), and
   `:Z` to `./pgdata:/var/lib/postgresql/data:Z`;
 - relabel the secrets folder once, since compose file secrets aren't relabelled automatically:

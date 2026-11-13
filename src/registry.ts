@@ -1,4 +1,6 @@
 import type { Command, Plugin } from './plugin.js';
+import type { PluginMeta } from './plugin-meta.js';
+import type { PluginSource } from './repos.js';
 
 /** A built-in group of commands (Core, Admin), shown in help like a plugin. */
 export type Module = { id: string; title: string; description?: string; commands: Command[] };
@@ -7,13 +9,19 @@ export type Module = { id: string; title: string; description?: string; commands
 export const modules: Module[] = [];
 
 /**
- * Loaded plugins, in load order. `id` is the folder path under PLUGINS_DIR ("whoami", or
- * "bitbot-plugins/addemote" for a plugin in a repo); `source` is the repo it came from, if any.
+ * A loaded plugin. `path` is its allowlist path ("builtin/ping", "local/mine", "bitbot-plugins/whoami");
+ * `meta` is its package.json; `repo` the managed repo it came from, if any.
  */
-export const plugins: (Plugin & { id: string; source?: string; api?: string })[] = [];
+export type LoadedPlugin = Plugin & { path: string; source: PluginSource; repo?: string; meta: PluginMeta };
 
-/** Plugins that were found but not loaded, and why (shown by !root plugins list). */
-export const disabledPlugins: { id: string; name?: string; reason: string }[] = [];
+/** Loaded plugins, in load order. */
+export const plugins: LoadedPlugin[] = [];
+
+/** Enabled plugins that weren't loaded, and why (shown by !root plugins list). */
+export const disabledPlugins: { path: string; title?: string; reason: string }[] = [];
+
+/** The core groups (by role) plugin commands requiring that role are mounted under. Set by commands.ts. */
+export const mounts: Record<string, Command> = {};
 
 /** Every top-level command, by name: built-ins plus those from plugins. */
 export const commands = new Map<string, Command>();

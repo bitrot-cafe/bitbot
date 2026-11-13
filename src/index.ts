@@ -1,5 +1,7 @@
 import { Client, EmbedBuilder, Events, parsePrefixCommand } from '@fluxerjs/core';
-import { loadPlugins, startPlugins, startupWarnings, stopPlugins } from './commands.js';
+import { askApprovals } from './approvals.js';
+import './commands.js'; // the core commands (registers them)
+import { loadPlugins, startPlugins, startupWarnings, stopPlugins } from './loader.js';
 import { databaseUrl, instance, token } from './config.js';
 import { humanDuration, loadCooldowns, startCooldownPruning, takeCooldown, type Reservation } from './cooldown.js';
 import type { CommandContext } from './plugin.js';
@@ -14,7 +16,7 @@ import { attachLogChannel, checkLogChannel, createLogger, errorMessage, isDebug 
 import { checkAccess, permissionErrorReply } from './permissions.js';
 import { loadApplicationOwner, loadPermissions, rolesOf, setRolesClient } from './roles.js';
 import { disabledPlugins, plugins, resolveCommand } from './registry.js';
-import { ensureRepos } from './repos.js';
+import { prepareRepos } from './repos.js';
 import { loadSettings } from './settings.js';
 import { startStatus } from './status.js';
 
@@ -47,6 +49,9 @@ const client = instance
   ? await Client.fromDiscovery(instance.includes('://') ? instance : `https://${instance}`)
   : new Client();
 setRolesClient(client);
+// Prompts and paged lists each hold reaction listeners for a while; more than Node's default of 10 at once
+// is normal here, not a leak.
+client.setMaxListeners(50);
 
 // Last-resort safety net for async code outside a command's try/catch (event listeners, timers):
 // log instead of letting Node kill the process. A truly uncaught exception leaves the process in an
@@ -72,11 +77,11 @@ client.on(Events.Ready, () => {
   if (disabledPlugins.length) {
     // Repeated now that we're connected, so it reaches the log channel (load-time logs can't).
     log.warn(`${disabledPlugins.length} plugin(s) not loaded`, {
-      plugins: disabledPlugins.map((p) => `${p.id}: ${p.reason}`),
+      plugins: disabledPlugins.map((p) => `${p.path}: ${p.reason}`),
     });
   }
   for (const warning of startupWarnings) log.warn(warning);
-  const undeclared = plugins.filter((p) => !p.api).map((p) => p.id);
+  const undeclared = plugins.filter((p) => !p.meta.api).map((p) => p.path);
   if (undeclared.length) {
     log.notice(`${undeclared.length} plugin(s) don't declare a bot API version`, { plugins: undeclared });
   }
@@ -86,8 +91,13 @@ client.on(Events.Ready, () => {
   }
 });
 
-// Plugin setup hooks run once, on the first connect (not on reconnects).
-client.once(Events.Ready, () => startPlugins(client));
+// Plugin setup hooks run once, on the first connect (not on reconnects). Then plugins waiting for their
+// dependencies to be approved are asked about (that needs the owner, for a DM when there's no log channel).
+client.once(Events.Ready, async () => {
+  await startPlugins(client);
+  await loadApplicationOwner(client).catch(() => {}); // logged by the Ready handler above
+  void askApprovals(client);
+});
 
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.content) return;
@@ -193,7 +203,7 @@ try {
 }
 
 attachLogChannel(client);
-await ensureRepos(); // clone any repo in plugins.json that's missing (fresh install)
+await prepareRepos(); // make the repo clones match the database
 await loadPlugins();
 startStatus(client);
 trackGuilds(client);

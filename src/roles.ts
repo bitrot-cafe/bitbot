@@ -28,6 +28,8 @@ export const BUILTIN_ROLES = ['root', 'admin'];
 type RoleDef = { users: Set<string>; staff: boolean };
 let roles = new Map<string, RoleDef>();
 let applicationOwnerId: string | null = null;
+/** The application owner (always root), once looked up at Ready; null before. */
+export const ownerId = () => applicationOwnerId;
 
 const ROLE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 

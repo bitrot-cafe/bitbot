@@ -3,7 +3,7 @@ import { db } from './db/index.js';
 import { NONE } from './db/schema.js';
 
 /*
- * Key/value storage for plugins, namespaced per plugin (its short id). Values are JSON-serialisable.
+ * Key/value storage for plugins, namespaced per plugin (its bitbot.id). Values are JSON-serializable.
  * Backed by the `kv` table, so it works the same on SQLite and Postgres.
  *
  * A plugin's store is bot-wide. store.guild(id) narrows it to one guild and store.user(id) to one user;

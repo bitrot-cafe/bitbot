@@ -5,21 +5,23 @@ import { createLogger } from './logger.js';
 import { permissionLabel, permissionsIn } from './permissions.js';
 import { canActOn, hasRole, hasStaffFlag, rolesOf } from './roles.js';
 import { audit } from './audit.js';
+import { botInviteUrl } from './invite.js';
 import type { BotAPI } from './plugin.js';
 import { configFor } from './settings.js';
 import { createStore } from './store.js';
 import { API_VERSION } from './version.js';
 
 /**
- * The object a plugin's factory receives. `id` is its folder id; `scope` its short id (settings scope and
- * store namespace). Adding to it is adding to the plugin API: keep it small.
+ * The object a plugin's factory receives. `path` is its allowlist path (logs); `id` its bitbot.id
+ * (settings scope, store namespace, audit source). Adding to it is adding to the plugin API: keep it small.
  */
-export function botApiFor(id: string, scope: string): BotAPI {
+export function botApiFor(path: string, id: string): BotAPI {
+  const scope = id;
   return {
     apiVersion: API_VERSION,
     config: configFor(scope),
     store: createStore(scope),
-    log: createLogger(id, 'plugin'),
+    log: createLogger(path, 'plugin'),
     audit: (entry) => audit(scope, entry),
     fluxer,
     prefixFor: (guildId) => coreSettings.prefix(guildId),
@@ -30,6 +32,7 @@ export function botApiFor(id: string, scope: string): BotAPI {
     hasStaffFlag,
     permissionLabel,
     permissionsIn,
+    inviteUrl: botInviteUrl,
     limits: { fetch: fetchLimits, get: getLimit, emojiDimensions: EMOJI_DIMENSIONS },
   };
 }

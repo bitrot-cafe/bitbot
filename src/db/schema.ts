@@ -78,13 +78,47 @@ export type TimersTable = {
   payload: string;
 };
 
+/**
+ * Plugin repos the bot manages (0002). The clone in plugins/repos/<name> is disposable: it's rebuilt from
+ * this row whenever it's missing, modified or on another commit.
+ */
+export type PluginReposTable = {
+  name: string;
+  url: string;
+  /** Branch or tag followed by `!root plugins update`; '' for the remote's default branch. */
+  ref: string;
+  /** The commit root reviewed (on add or update): what's checked out. */
+  commit: string;
+  updated_at: string;
+  updated_by: string | null;
+};
+
+/** The allowlist (0002): plugin paths that load ("builtin/ping", "local/mine", "bitbot-plugins/whoami"). */
+export type PluginsEnabledTable = {
+  path: string;
+  enabled_at: string;
+  enabled_by: string | null;
+};
+
+/** Dependency installs root approved (0002): asked again only when the plugin's lockfile changes. */
+export type PluginApprovalsTable = {
+  path: string;
+  /** sha256 of the plugin's package-lock.json. */
+  lock_hash: string;
+  approved_at: string;
+  approved_by: string | null;
+};
+
 export type Database = {
   settings: SettingsTable;
   kv: KvTable;
   audit_log: AuditLogTable;
   guilds: GuildsTable;
   timers: TimersTable;
+  plugin_repos: PluginReposTable;
+  plugins_enabled: PluginsEnabledTable;
+  plugin_approvals: PluginApprovalsTable;
 };
 
 /** Tables holding data (copied by db:copy), in dependency order. */
-export const DATA_TABLES = ['settings', 'kv', 'audit_log', 'guilds', 'timers'] as const satisfies readonly (keyof Database)[];
+export const DATA_TABLES = ['settings', 'kv', 'audit_log', 'guilds', 'timers', 'plugin_repos', 'plugins_enabled', 'plugin_approvals'] as const satisfies readonly (keyof Database)[];

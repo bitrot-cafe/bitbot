@@ -4,7 +4,10 @@
 #     fluxer_bot_token              the bot token
 #     postgres_password             the database password
 #     database_url                  postgres://bitbot:<password>@db:5432/bitbot
-#   /opt/bitbot/plugins/          bot-managed: plugins.json + plugin repo clones (writable by uid 1000)
+#   /opt/bitbot/plugins/local/    your own plugins, if any (writable by uid 1000: the bot installs their
+#                                 approved dependencies; it changes nothing else there)
+#   /opt/bitbot/plugins/repos/    plugin repo clones, managed by the bot (writable by uid 1000); which
+#                                 repos and plugins is in the database, so this folder can be rebuilt
 #   /opt/bitbot/public/           the generated help.html (writable by uid 1000), if help_page_path is set
 #   /opt/bitbot/pgdata/           Postgres data
 #   /opt/bitbot/permissions.yaml  who administers the bot (from permissions.example.yaml), read-only
@@ -15,7 +18,7 @@ name: bitbot
 
 services:
   bot:
-    image: ghcr.io/bitrot-cafe/bitbot:0.3.0 # pin a release tag; bump to upgrade
+    image: ghcr.io/bitrot-cafe/bitbot:0.4.0 # pin a release tag; bump to upgrade
     env_file: .env
     environment:
       PLUGINS_DIR: /app/plugins
@@ -23,7 +26,8 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
     secrets: [fluxer_bot_token, database_url]
     volumes:
-      - ./plugins:/app/plugins
+      - ./plugins/local:/app/plugins/local
+      - ./plugins/repos:/app/plugins/repos
       - ./public:/app/public
       - ./permissions.yaml:/app/permissions.yaml:ro
     depends_on:

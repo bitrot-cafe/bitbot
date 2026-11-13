@@ -2,7 +2,7 @@ import { readEnv } from './config.js';
 import { defineSettings, getSetting } from './settings.js';
 
 /*
- * The core's own settings (scope "core"). Each still honours its old environment variable, which then
+ * The core's own settings (scope "core"). Each still honors its old environment variable, which then
  * takes precedence over the value stored in the database. A bad env value is fatal at startup (index.ts
  * checks coreSettingProblems); until then it's ignored, so logging can never throw.
  */

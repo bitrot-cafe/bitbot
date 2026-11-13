@@ -77,7 +77,7 @@ export async function initDb(url: string) {
 
 /** The bot's database. Throws if initDb() hasn't run. */
 export function db(): Db {
-  if (!current) throw new Error('Database not initialised (initDb was not called)');
+  if (!current) throw new Error('Database not initialized (initDb was not called)');
   return current;
 }
 

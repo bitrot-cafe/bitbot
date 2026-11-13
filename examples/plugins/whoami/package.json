@@ -1,8 +1,14 @@
 {
   "name": "bitbot-plugin-whoami",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Shows a user (default: the caller) their identity, bot roles, staff status, and server roles and permissions.",
+  "author": "UVClay",
+  "repository": "https://github.com/bitrot-cafe/bitbot-plugins",
   "bitbot": {
-    "api": "0.3"
+    "api": "0.4",
+    "id": "whoami",
+    "title": "Who Am I"
   }
 }

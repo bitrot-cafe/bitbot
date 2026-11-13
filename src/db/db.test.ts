@@ -18,7 +18,7 @@ let db: Db;
 before(async () => {
   db = openDb(url);
   if (url.startsWith('postgres')) {
-    await sql`drop table if exists settings, kv, audit_log, guilds, timers, kysely_migration, kysely_migration_lock cascade`.execute(db);
+    await sql`drop table if exists settings, kv, audit_log, guilds, timers, plugin_repos, plugins_enabled, plugin_approvals, kysely_migration, kysely_migration_lock cascade`.execute(db);
   }
   await migrate(db);
   setDb(db);

@@ -68,7 +68,7 @@ const STYLE: Record<Exclude<Level, 'debug' | 'info'>, { emoji: string; color: nu
 /** Fit text into an embed field: trimmed, wrapped in a code block. */
 const block = (text: string, lang = '') => `\`\`\`${lang}\n${text.length > 990 ? `${text.slice(0, 990)}…` : text}\n\`\`\``;
 
-/** The log-channel post for an entry: an embed with a colour bar per level. */
+/** The log-channel post for an entry: an embed with a color bar per level. */
 function toEmbed({ level, source, message, fields, error, ref }: Entry) {
   const style = STYLE[level as keyof typeof STYLE];
   const embed = new EmbedBuilder()

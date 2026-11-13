@@ -1,6 +1,7 @@
 import { Events, type Client } from '@fluxerjs/core';
 import { build } from './build.js';
 import { coreSettings } from './core-settings.js';
+import { safeMode } from './config.js';
 import { isDebug } from './logger.js';
 import { setSetting, unsetSetting } from './settings.js';
 
@@ -8,7 +9,8 @@ import { setSetting, unsetSetting } from './settings.js';
 let pending: NodeJS.Timeout | undefined;
 
 function render(client: Client) {
-  // Debug mode overrides the status, so a debug build is obvious at a glance.
+  // Safe and debug mode override the status, so they're obvious at a glance.
+  if (safeMode) return 'SAFE MODE: no plugins loaded';
   if (isDebug()) return `DEBUG: commit ${build.commit}`;
   return coreSettings.status().replaceAll('{prefix}', coreSettings.prefix()).replaceAll('{guilds}', String(client.guilds.size));
 }

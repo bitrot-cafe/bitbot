@@ -1,0 +1,12 @@
+{
+  "name": "bitbot-builtin-ping",
+  "private": true,
+  "type": "module",
+  "description": "Check that the bot is up. Enabled on a new bot; root can disable it (root plugins disable ping).",
+  "author": "bitbot",
+  "bitbot": {
+    "api": "0.4",
+    "id": "ping",
+    "title": "Ping"
+  }
+}

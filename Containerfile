@@ -1,6 +1,6 @@
 FROM docker.io/library/node:22-alpine AS base
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-# git: the bot clones and updates plugin repos itself (dev too: plugins/ is bot-managed everywhere).
+# git: the bot clones and updates plugin repos itself (dev too: plugins/repos is bot-managed everywhere).
 RUN corepack enable && apk add --no-cache git
 WORKDIR /app
 
@@ -27,8 +27,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY src ./src
-# Plugins aren't baked in: the bot manages them in /app/plugins (mount it writable; see deploy/README.md).
+COPY builtin ./builtin
+# Only the built-in plugins (builtin/) are baked in. The rest live in /app/plugins/local (yours) and
+# /app/plugins/repos (clones the bot manages); mount both writable (see deploy/README.md).
 # data/: the SQLite database (default DATABASE_URL=sqlite:data/bitbot.db); mount it to keep it.
-RUN mkdir -p plugins public data && chown node:node plugins public data
+RUN mkdir -p plugins/local plugins/repos public data && chown -R node:node plugins public data
 USER node
 CMD ["node", "--import", "tsx", "src/index.ts"]

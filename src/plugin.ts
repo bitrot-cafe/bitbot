@@ -72,25 +72,12 @@ export type CooldownLimit = { seconds: number; per: 'user' | 'guild' | 'bot' };
 export type Cooldown = number | CooldownLimit | CooldownLimit[];
 
 /**
- * A plugin is a folder in PLUGINS_DIR whose index.ts default-exports a PluginFactory.
- * Each plugin folder is self-contained (its own package.json for dependencies, if it needs any),
- * so a repo can hold several of them.
+ * What a plugin's factory returns: its code. Everything about the plugin (id, title, version, settings,
+ * roles, default cooldown) is in its package.json, under "bitbot" (see the README), so the bot can list
+ * and check plugins without running them.
  */
 export type Plugin = {
-  name: string;
-  version: string;
-  author: string;
-  repo?: string;
-  description?: string;
   commands: Command[];
-  /**
-   * Settings the plugin uses, keyed by name. Stored in the bot's database and editable with
-   * `!admin config <plugin> ...`; each also honours an environment variable (`env`, default
-   * PLUGIN_KEY in upper case). Mark tokens and passwords `secret`: those come from env / *_FILE only.
-   * Read them with bot.config.get(key) in commands and setup (not while the factory itself runs: they're
-   * declared by what it returns).
-   */
-  config?: Record<string, SettingDef>;
   /**
    * Runs once, after the bot first connects: register event listeners, start timers.
    * A throw is logged and disables the plugin's setup, not the bot.
@@ -129,7 +116,10 @@ export type BotAPI = {
    * needs in its package.json, `"bitbot": { "api": "0.3" }`: same major, and at most this minor.
    */
   apiVersion: string;
-  /** This plugin's declared settings (see Plugin.config). */
+  /**
+   * This plugin's settings, declared in its package.json ("bitbot": { "config": { ... } }). Readable
+   * anywhere, the factory included; read on use, since chat changes apply immediately.
+   */
   config: PluginConfig;
   /** Key/value storage, private to this plugin; .guild(id) and .user(id) narrow it (see Store). */
   store: Store;
@@ -165,6 +155,8 @@ export type BotAPI = {
   permissionLabel: typeof permissionLabel;
   /** A member's effective permissions in a channel. */
   permissionsIn: typeof permissionsIn;
+  /** The link that adds the bot to a guild, with the permissions every loaded command needs: `bot.inviteUrl(message.client)`. */
+  inviteUrl: (client: Client) => string;
   /** Instance limits (fetched fresh) and fixed platform rules. */
   limits: { fetch: typeof fetchLimits; get: typeof getLimit; emojiDimensions: typeof EMOJI_DIMENSIONS };
 };
@@ -172,7 +164,7 @@ export type BotAPI = {
 /**
  * What a plugin's index.ts default-exports:
  *   import type { PluginFactory } from 'bitbot';
- *   const plugin: PluginFactory = (bot) => ({ name: 'Cool', version: '1.0.0', author: 'me', commands: [...] });
+ *   const plugin: PluginFactory = (bot) => ({ commands: [...] });
  *   export default plugin;
  */
 export type PluginFactory = (bot: BotAPI) => Plugin | Promise<Plugin>;

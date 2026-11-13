@@ -11,7 +11,8 @@ import { commands, leaves, modules, plugins, requiredRolesOf } from './registry.
 
 const log = createLogger('help');
 
-export type Section = { title: string; id: string; description?: string; commands: Command[] };
+/** `id`: a module's id or a plugin's path; `key`: what `!help <key>` takes (a plugin's bitbot.id). */
+export type Section = { title: string; id: string; key: string; description?: string; commands: Command[] };
 
 /**
  * Built-in modules first, then each plugin, as runnable commands (subcommands flattened, e.g. "admin status").
@@ -24,10 +25,11 @@ export function sections(): Section[] {
     ...modules.map((m) => ({
       title: m.title,
       id: m.id,
+      key: m.id,
       description: m.description,
       commands: m.commands.filter((c) => commands.get(c.name) === c).flatMap(leaves).filter((c) => !c.origin),
     })),
-    ...plugins.map((p) => ({ title: p.name, id: p.id, description: p.description, commands: runnable.filter((c) => c.origin === p.id) })),
+    ...plugins.map((p) => ({ title: p.meta.title, id: p.path, key: p.meta.id, description: p.meta.description, commands: runnable.filter((c) => c.origin === p.path) })),
   ].filter((s) => s.commands.length);
 }
 

@@ -1,0 +1,12 @@
+{
+  "name": "bitbot-builtin-invite",
+  "private": true,
+  "type": "module",
+  "description": "DMs a link that adds the bot to a server. Not enabled by default; root can enable it (root plugins enable invite).",
+  "author": "bitbot",
+  "bitbot": {
+    "api": "0.4",
+    "id": "invite",
+    "title": "Invite"
+  }
+}

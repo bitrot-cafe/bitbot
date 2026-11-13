@@ -35,7 +35,7 @@ const rowsOf = async (url: string) => {
 test(`round trip: sqlite → ${pgUrl ? 'postgres' : 'sqlite'} → sqlite keeps every row`, async () => {
   if (pgUrl) {
     const pg = openDb(pgUrl);
-    await sql`drop table if exists settings, kv, audit_log, guilds, timers, kysely_migration, kysely_migration_lock cascade`.execute(pg);
+    await sql`drop table if exists settings, kv, audit_log, guilds, timers, plugin_repos, plugins_enabled, plugin_approvals, kysely_migration, kysely_migration_lock cascade`.execute(pg);
     await pg.destroy();
   }
   // Seed the source, including unicode and large values.
@@ -60,8 +60,8 @@ test(`round trip: sqlite → ${pgUrl ? 'postgres' : 'sqlite'} → sqlite keeps e
   await src.destroy();
 
   const silent = () => {};
-  assert.deepEqual(await copyDatabase(sqliteA, middle, silent), { settings: 1200, kv: 1, audit_log: 1, guilds: 1, timers: 1 });
-  assert.deepEqual(await copyDatabase(middle, sqliteB, silent), { settings: 1200, kv: 1, audit_log: 1, guilds: 1, timers: 1 });
+  assert.deepEqual(await copyDatabase(sqliteA, middle, silent), { settings: 1200, kv: 1, audit_log: 1, guilds: 1, timers: 1, plugin_repos: 0, plugins_enabled: 0, plugin_approvals: 0 });
+  assert.deepEqual(await copyDatabase(middle, sqliteB, silent), { settings: 1200, kv: 1, audit_log: 1, guilds: 1, timers: 1, plugin_repos: 0, plugins_enabled: 0, plugin_approvals: 0 });
   assert.deepEqual(await rowsOf(sqliteB), await rowsOf(sqliteA));
 
   // Refuses to copy into a database that already has data.

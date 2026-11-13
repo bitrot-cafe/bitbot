@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /*
@@ -34,11 +35,21 @@ export const token = readEnv('FLUXER_BOT_TOKEN') ?? '';
 export const instance = readEnv('FLUXER_INSTANCE') ?? '';
 
 
-/** Folder of plugins, loaded at runtime. Default: plugins/ in the app folder. */
-export const pluginsDir = readEnv('PLUGINS_DIR') ?? fileURLToPath(new URL('../plugins/', import.meta.url));
+/**
+ * Folder of plugins, loaded at runtime. Default: plugins/ in the app folder. Always absolute: git runs in
+ * other folders, so a relative path would point somewhere else for it.
+ */
+export const pluginsDir = resolve(readEnv('PLUGINS_DIR') ?? fileURLToPath(new URL('../plugins/', import.meta.url)));
 
 /**
  * Database: `sqlite:<path>` (relative to the app folder; `sqlite::memory:` for tests) or a
  * `postgres://user:pass@host:5432/db` URL. Holds a password for Postgres, so prefer DATABASE_URL_FILE.
  */
 export const databaseUrl = readEnv('DATABASE_URL') ?? 'sqlite:data/bitbot.db';
+
+/**
+ * SAFE_MODE=true: start with no plugins at all (builtins included), so one that breaks the bot can be
+ * disabled from chat (`!root plugins disable <plugin>`). Plugin repos are still kept in shape; nothing of
+ * a plugin's runs.
+ */
+export const safeMode = /^(true|on|yes|1)$/i.test(readEnv('SAFE_MODE') ?? '');
