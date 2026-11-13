@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "bitbot": {
-    "api": "1.0"
+    "api": "0.3"
   }
 }

@@ -1,36 +1,44 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/* All settings, read once from the environment.
- * These should be configured in ../.env (see .env.example), not here in config.ts directly!
+/*
+ * Bootstrap settings: what the bot needs before its database is open, plus anything that must never be
+ * changed from chat. Read once from the environment; configure them in ../.env (see .env.example).
+ * Everything else is a setting in the database (src/settings.ts), editable with !admin config.
  */
-const env = process.env;
 
-/** Bot token. Required. */
-export const token = env.FLUXER_BOT_TOKEN ?? '';
+/**
+ * Read an environment variable. NAME_FILE takes precedence and holds a path to a file with the value
+ * (trimmed), which is how Docker/compose secrets are passed. Empty means unset.
+ */
+export function readEnv(name: string): string | undefined {
+  const file = process.env[`${name}_FILE`];
+  if (file) {
+    try {
+      return readFileSync(file, 'utf8').trim() || undefined;
+    } catch (error) {
+      throw new Error(`${name}_FILE points at ${file}, which can't be read: ${(error as Error).message}`);
+    }
+  }
+  const value = process.env[name];
+  return value === undefined || value === '' ? undefined : value;
+}
+
+/** The app folder (where package.json lives), for resolving relative paths. */
+export const appRoot = fileURLToPath(new URL('../', import.meta.url));
+
+/** Bot token. Required. Secret: prefer FLUXER_BOT_TOKEN_FILE. */
+export const token = readEnv('FLUXER_BOT_TOKEN') ?? '';
 
 /** Self-hosted instance (bare hostname or URL); empty means fluxer.app. */
-export const instance = env.FLUXER_INSTANCE ?? '';
+export const instance = readEnv('FLUXER_INSTANCE') ?? '';
 
-/** Command prefix, shared by the core and plugins. */
-export const prefix = env.PREFIX || '!';
 
-/** Status template; placeholders {prefix} and {guilds}. */
-export const defaultStatus = env.BOT_STATUS || '{prefix}help | Live in {guilds} guilds';
+/** Folder of plugins, loaded at runtime. Default: plugins/ in the app folder. */
+export const pluginsDir = readEnv('PLUGINS_DIR') ?? fileURLToPath(new URL('../plugins/', import.meta.url));
 
-/** Treat instance staff (Staff badge) as bot administrators. Off on fluxer.app, where Staff means Fluxer employees. */
-export const trustInstanceStaff = env.TRUST_INSTANCE_STAFF === 'true';
-
-/** Debug mode at startup (toggle at runtime with !admin debug). Shows debug logs and error details in replies. */
-export const debug = env.DEBUG === 'true';
-
-/** Channel ID that receives warnings and errors. Empty: console only. Use a private channel. */
-export const logChannelId = env.LOG_CHANNEL_ID ?? '';
-
-/** Where to write the static command list (HTML) at startup. Empty: don't write one. */
-export const helpPagePath = env.HELP_PAGE_PATH ?? '';
-
-/** Public URL of that page; when set, !help links to it. */
-export const helpUrl = env.HELP_URL ?? '';
-
-/** Folder of plugins, loaded at runtime (one subfolder each). Default: plugins/ next to src/. */
-export const pluginsDir = env.PLUGINS_DIR || fileURLToPath(new URL('../plugins/', import.meta.url));
+/**
+ * Database: `sqlite:<path>` (relative to the app folder; `sqlite::memory:` for tests) or a
+ * `postgres://user:pass@host:5432/db` URL. Holds a password for Postgres, so prefer DATABASE_URL_FILE.
+ */
+export const databaseUrl = readEnv('DATABASE_URL') ?? 'sqlite:data/bitbot.db';

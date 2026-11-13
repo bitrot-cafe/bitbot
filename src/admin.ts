@@ -1,254 +1,151 @@
 import { EmbedBuilder } from '@fluxerjs/core';
-import { confirm } from './confirm.js';
-import { helpPagePath, helpUrl, prefix } from './config.js';
-import { usageLine, writeHelpPage } from './help.js';
-import { restart } from './lifecycle.js';
-import { createLogger, isDebug, setDebug } from './logger.js';
-import { permissionLabel } from './permissions.js';
+import { px, recorder, sourceLabel, who } from './admin-util.js';
+import { code } from './text.js';
+import { recentAudit } from './audit.js';
+import { createLogger } from './logger.js';
 import type { Command } from './plugin.js';
-import { disabledPlugins, leaves, plugins, type Module } from './registry.js';
-import { abortAdd, applyUpdates, finishAdd, listRepos, previewUpdates, readManifest, removeRepo, startAdd } from './repos.js';
-import { refreshStatus, setStatusTemplate } from './status.js';
-import { API_VERSION, checkApiVersion } from './version.js';
+import type { Module } from './registry.js';
+import { hasRole } from './roles.js';
+import { definitionsOf, describeScope, missingRequired, resolve, scopes, setSetting, unsetSetting } from './settings.js';
+import { setStatusTemplate } from './status.js';
 
-/* Bot administration. Everything here is bot-admin only (inherited from the `admin` group). */
+/*
+ * !admin: running the bot day to day (settings, status, the audit log). Admin role or above, inherited
+ * from the group. Root-only settings are refused here unless the caller is root. Plugin commands that
+ * require the admin role are mounted here too.
+ */
 
 const log = createLogger('admin');
-
-/** One line per plugin with its API compatibility, for the add/update prompts. */
-function compatList(found: { id: string; api?: string }[]) {
-  if (!found.length) return '  **no plugins**';
-  return found
-    .map(({ id, api }) => {
-      const c = checkApiVersion(api);
-      const note =
-        c.status === 'ok'
-          ? `✅ API ${api}`
-          : c.status === 'undeclared'
-            ? '⚠️ doesn\'t declare an API version (loads with a warning)'
-            : `⛔ ${c.reason}: **will be disabled**`;
-      return `  • \`${id}\`: ${note}`;
-    })
-    .join('\n');
-}
-const who = (m: { author: { username: string; id: string } }) => `${m.author.username} (${m.author.id})`;
-
-const pluginsList: Command = {
-  name: 'list',
-  description: 'Numbered list of loaded plugins.',
-  run: async (message) => {
-    const loaded = plugins.length
-      ? plugins.map((p, i) => `${i + 1}. ${p.name} (v${p.version}) - ${p.author} · \`${p.id}\``).join('\n')
-      : 'No plugins loaded.';
-    const off = disabledPlugins.map((d) => `⛔ \`${d.id}\`${d.name ? ` (${d.name})` : ''}: ${d.reason}`);
-    return message.reply([loaded, ...(off.length ? ['', '**Not loaded:**', ...off] : [])].join('\n'));
-  },
-};
-
-const pluginsInfo: Command = {
-  name: 'info',
-  description: 'Details for one plugin.',
-  usage: '<number>',
-  botPermissions: ['EmbedLinks'],
-  run: async (message, [n]) => {
-    const p = plugins[Number(n) - 1];
-    if (!p) return message.reply(`No plugin #${n ?? '?'}. See \`${prefix}admin plugins list\`.`);
-    const all = p.commands.flatMap(leaves);
-    // The repo the bot installed it from wins; a plugin's own `repo` field covers local folders.
-    const managed = p.source ? (await readManifest().catch(() => [])).find((r) => r.name === p.source) : undefined;
-    const repo = managed ? `[${managed.name}](${managed.url})${managed.ref ? ` (${managed.ref})` : ''}` : (p.repo ?? '— (local folder)');
-    const perms = [...new Set(all.flatMap((c) => c.botPermissions ?? []))];
-    const embed = new EmbedBuilder()
-      .setTitle(p.name)
-      .setDescription(p.description ?? null)
-      .addFields(
-        { name: 'Version', value: `v${p.version}`, inline: true },
-        { name: 'Author', value: p.author, inline: true },
-        { name: 'Folder', value: `\`plugins/${p.id}\``, inline: true },
-        { name: 'Repo', value: repo },
-        { name: 'API', value: `${p.api ? `needs ${p.api}` : 'not declared'} · this bot has ${API_VERSION}`, inline: true },
-        { name: 'Commands', value: all.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n') },
-        { name: 'Bot permissions', value: perms.length ? perms.map(permissionLabel).join(', ') : '—' },
-      );
-    return message.reply({ embeds: [embed] });
-  },
-};
-
-// ---- Plugin repos ---------------------------------------------------------------------------------
-
-const repos: Command = {
-  name: 'repos',
-  description: 'Plugin repos the bot manages.',
-  run: async (message) => {
-    const list = await listRepos();
-    if (!list.length) return message.reply(`No plugin repos. Add one with \`${prefix}admin plugins add <https-url> [ref]\`.`);
-    return message.reply(
-      list
-        .map(
-          (r) =>
-            `**${r.name}** \`${r.commit ?? 'missing'}\`${r.ref ? ` (${r.ref})` : ''} · ${r.url}\n` +
-            `  ${r.plugins.length ? r.plugins.map((p) => `\`${p}\``).join(', ') : 'no plugins'}`,
-        )
-        .join('\n'),
-    );
-  },
-};
-
-const add: Command = {
-  name: 'add',
-  description: 'Clone a plugin repo (any HTTPS git URL), show what\'s in it, and load it after you confirm.',
-  usage: '<https-url> [branch|tag]',
-  botPermissions: ['AddReactions'],
-  run: async (message, [url, ref]) => {
-    if (!url) return message.reply(`Usage: \`${prefix}admin plugins add <https-url> [branch|tag]\``);
-    let added;
-    try {
-      added = await startAdd(url, ref);
-    } catch (error) {
-      return message.reply(`Couldn't add it: ${(error as Error).message}`);
-    }
-    const { entry, plugins: found, commit } = added;
-    const { ok, prompt } = await confirm(
-      message,
-      `**${entry.name}** at \`${commit}\` contains:\n${compatList(found)}\n` +
-        `⚠️ Plugins run with the bot's token and settings. Only add code you trust.\nInstall and restart to load it?`,
-    );
-    if (!ok) {
-      await abortAdd(entry.name);
-      return prompt.edit({ content: `Cancelled; removed the clone of **${entry.name}**.` });
-    }
-    await prompt.edit({ content: `Installing **${entry.name}**…` });
-    await finishAdd(entry);
-    log.notice(`Plugin repo ${entry.name} added by ${who(message)}`, { url: entry.url, ref: entry.ref, commit });
-    await prompt.edit({ content: `Added **${entry.name}**. Restarting to load it…` });
-    await restart(`plugin repo ${entry.name} added`);
-  },
-};
-
-const remove: Command = {
-  name: 'remove',
-  description: 'Delete a plugin repo and restart without it.',
-  usage: '<repo>',
-  botPermissions: ['AddReactions'],
-  run: async (message, [name]) => {
-    if (!name) return message.reply(`Usage: \`${prefix}admin plugins remove <repo>\` (see \`${prefix}admin plugins repos\`)`);
-    const repo = (await listRepos()).find((r) => r.name === name);
-    if (!repo) return message.reply(`No managed repo called "${name}".`);
-    const { ok, prompt } = await confirm(
-      message,
-      `Remove **${name}** and its plugins (${repo.plugins.map((p) => `\`${p}\``).join(', ') || 'none'}), then restart?`,
-    );
-    if (!ok) return prompt.edit({ content: 'Cancelled.' });
-    await removeRepo(name);
-    log.notice(`Plugin repo ${name} removed by ${who(message)}`);
-    await prompt.edit({ content: `Removed **${name}**. Restarting…` });
-    await restart(`plugin repo ${name} removed`);
-  },
-};
-
-const update: Command = {
-  name: 'update',
-  description: 'Fetch plugin repos (all, or one), show the new commits, and apply them after you confirm.',
-  usage: '[repo]',
-  botPermissions: ['AddReactions'],
-  run: async (message, [name]) => {
-    let pending;
-    try {
-      pending = await previewUpdates(name);
-    } catch (error) {
-      return message.reply(`Couldn't check for updates: ${(error as Error).message}`);
-    }
-    if (!pending.length) return message.reply(name ? `**${name}** is up to date.` : 'All plugin repos are up to date.');
-    const summary = pending
-      .map(
-        (u) =>
-          `**${u.name}** \`${u.from.slice(0, 7)}\` → \`${u.to.slice(0, 7)}\` (${u.count} commit${u.count === 1 ? '' : 's'}` +
-          `${u.depsChanged ? ', dependencies changed' : ''})\n` +
-          u.commits.map((c) => `  • ${c}`).join('\n') +
-          (u.count > u.commits.length ? `\n  • …and ${u.count - u.commits.length} more` : '') +
-          `\n  After the update:\n${compatList(u.plugins).replace(/^  /gm, '    ')}`,
-      )
-      .join('\n');
-    const { ok, prompt } = await confirm(message, `${summary}\n\nApply and restart?`);
-    if (!ok) return prompt.edit({ content: `${summary}\n\nCancelled; nothing changed.` });
-    await prompt.edit({ content: `${summary}\n\nUpdating…` });
-    await applyUpdates(pending);
-    log.notice(`Plugin repos updated by ${who(message)}`, {
-      updates: pending.map((u) => `${u.name} ${u.from.slice(0, 7)}..${u.to.slice(0, 7)}`),
-    });
-    await prompt.edit({ content: `${summary}\n\nUpdated. Restarting…` });
-    await restart('plugin repos updated');
-  },
-};
-
-const restartCmd: Command = {
-  name: 'restart',
-  description: 'Restart the bot (reloads all plugins).',
-  run: async (message) => {
-    log.notice(`Restart requested by ${who(message)}`);
-    await message.reply('Restarting…');
-    await restart(`requested by ${message.author.username}`);
-  },
-};
+const record = recorder('admin');
 
 const status: Command = {
   name: 'status',
-  description: 'Set the bot status (placeholders {prefix}, {guilds}), or reset it to the default. Not kept across restarts.',
+  description: 'Set the bot status (placeholders {prefix}, {guilds}), or reset it to the default. Stored in the database.',
   usage: '<text|reset>',
-  run: async (message, args, rest) => {
-    if (!rest) return message.reply(`Usage: \`${prefix}admin status <text|reset>\``);
+  run: async (message, args, rest, ctx) => {
+    if (!rest) return ctx.usage();
     const text = rest === 'reset' ? null : rest;
-    const shown = setStatusTemplate(message.client, text);
-    return message.reply(`Status set to: ${shown}${text === null ? ' (default)' : ''}`);
-  },
-};
-
-const debug: Command = {
-  name: 'debug',
-  description: 'Show or toggle debug mode: debug logs, and error details in replies. Not kept across restarts.',
-  usage: '[on|off]',
-  run: async (message, [mode]) => {
-    if (mode === 'on' || mode === 'off') {
-      setDebug(mode === 'on');
-      refreshStatus(message.client); // status shows "DEBUG: commit …" while debug is on
+    try {
+      const shown = await setStatusTemplate(message.client, text, who(message));
+      log.notice(`Status ${text === null ? 'reset' : 'changed'} by ${who(message)}`, { status: shown });
+      await record(message, text === null ? 'setting.unset' : 'setting.set', 'core.status', text === null ? {} : { value: text });
+      return message.reply(`Status set to: ${code(shown)}${text === null ? ' (default)' : ''}`);
+    } catch (error) {
+      return message.reply(`Couldn't change it: ${(error as Error).message}`);
     }
-    return message.reply(
-      `Debug mode is **${isDebug() ? 'on' : 'off'}**${isDebug() ? ': debug logs shown, error details included in replies.' : '.'}`,
-    );
   },
 };
 
-const helpPage: Command = {
-  name: 'helppage',
-  description: 'Regenerate the web help page (HELP_PAGE_PATH) from the loaded plugins.',
-  run: async (message) => {
-    if (!helpPagePath) return message.reply('No help page configured. Set `HELP_PAGE_PATH` in `.env`.');
-    const written = await writeHelpPage(message.client.user?.username ?? 'Bot');
-    if (!written) return message.reply("Couldn't write the help page; check the logs.");
-    return message.reply(`Help page written to \`${written}\`${helpUrl ? `: ${helpUrl}` : '.'}`);
-  },
-};
 
-const admin: Command = {
-  name: 'admin',
-  description: 'Bot administration.',
-  botAdminOnly: true,
+/** Root-only settings (immunity: an admin can't change what's reserved for root). Throws a readable reason. */
+async function checkRootOnly(message: { author: Parameters<typeof hasRole>[0] }, scope: string, key: string) {
+  if (definitionsOf(scope)[key]?.rootOnly && !(await hasRole(message.author, 'root'))) {
+    throw new Error(`${scope}.${key} can only be changed by bot root`);
+  }
+}
+
+const config: Command = {
+  name: 'config',
+  description: 'Show settings: all scopes, or one scope (core, or a plugin by short id).',
+  usage: '[scope]',
+  botPermissions: ['EmbedLinks'],
+  run: async (message, [scope]) => {
+    if (!scope) {
+      const lines = scopes().map((s) => {
+        const missing = missingRequired(s);
+        return `\`${s}\`${missing.length ? ` · ⚠️ missing: ${missing.join(', ')}` : ''}`;
+      });
+      return message.reply(`**Settings scopes**\n${lines.join('\n')}\n\nDetails: \`${px(message)}admin config <scope>\``);
+    }
+    if (!scopes().includes(scope)) return message.reply(`No settings scope ${code(scope)}. See \`${px(message)}admin config\`.`);
+    const embed = new EmbedBuilder().setTitle(`Settings: ${scope}`);
+    for (const s of describeScope(scope).slice(0, 25)) {
+      const value = s.display === undefined ? '—' : code(s.display.length > 200 ? `${s.display.slice(0, 200)}…` : s.display);
+      const tags = [sourceLabel(s), s.def.secret ? 'secret' : '', s.def.restart ? 'restart to apply' : '', s.def.rootOnly ? 'root only' : '', s.source === 'env' ? `\`${s.envName}\`` : '']
+        .filter(Boolean)
+        .join(' · ');
+      embed.addFields({ name: `${s.missing ? '⚠️ ' : ''}${s.key}`, value: `${value} (${tags})\n${s.def.description}` });
+    }
+    embed.setFooter({ text: `${px(message)}admin config set ${scope} <key> <value> · ${px(message)}admin config unset ${scope} <key>` });
+    return message.reply({ embeds: [embed] });
+  },
   subcommands: [
     {
-      name: 'plugins',
-      description: 'Inspect plugins and manage plugin repos.',
-      subcommands: [pluginsList, pluginsInfo, repos, add, update, remove],
+      name: 'set',
+      description: 'Store a setting (not secrets: those come from the environment or *_FILE).',
+      usage: '<scope> <key> <value>',
+      run: async (message, [scope, key], rest, ctx) => {
+        // Everything after scope and key, spacing kept. One pair of matching outer quotes is dropped, so
+        // `set core status "{prefix}help | hi"` stores the text, not the quotes.
+        const value = rest.replace(/^\S+\s+\S+\s*/, '').replace(/^(["'])([\s\S]*)\1$/, '$2');
+        if (!scope || !key || !value) return ctx.usage();
+        try {
+          await checkRootOnly(message, scope, key);
+          const stored = await setSetting(scope, key, value, who(message));
+          log.notice(`Setting ${scope}.${key} changed by ${who(message)}`, { value: String(stored) });
+          await record(message, 'setting.set', `${scope}.${key}`, { value: stored });
+          return message.reply(`Set **${scope}.${key}** to ${code(String(stored))}.`);
+        } catch (error) {
+          return message.reply(`Couldn't set it: ${(error as Error).message}`);
+        }
+      },
     },
-    restartCmd,
-    status,
-    debug,
-    helpPage,
+    {
+      name: 'unset',
+      description: 'Remove a stored setting (back to its default).',
+      usage: '<scope> <key>',
+      run: async (message, [scope, key], _rest, ctx) => {
+        if (!scope || !key) return ctx.usage();
+        try {
+          await checkRootOnly(message, scope, key);
+          await unsetSetting(scope, key);
+          log.notice(`Setting ${scope}.${key} reset by ${who(message)}`);
+          await record(message, 'setting.unset', `${scope}.${key}`);
+          return message.reply(`Removed **${scope}.${key}**; it's back to ${resolve(scope, key).source === 'env' ? 'the environment value' : 'its default'}.`);
+        } catch (error) {
+          return message.reply(`Couldn't unset it: ${(error as Error).message}`);
+        }
+      },
+    },
   ],
+};
+
+
+const auditCmd: Command = {
+  name: 'audit',
+  description: 'The most recent entries in the audit log (who changed what), newest first.',
+  usage: '[count]',
+  run: async (message, [n]) => {
+    const rows = await recentAudit({ limit: Number(n) || 15 });
+    if (!rows.length) return message.reply('The audit log is empty.');
+    const lines = rows.map((r) => {
+      const when = `<t:${Math.floor(Date.parse(r.at) / 1000)}:R>`;
+      const by = r.actor ? `${r.actor}` : 'the bot';
+      const where = r.guild_id ? ` · guild \`${r.guild_id}\`` : '';
+      return `${when} **${by}** ${r.source}/\`${r.action}\`${r.target ? ` \`${r.target}\`` : ''}${where}`;
+    });
+    // Keep under the message length limit.
+    let text = '';
+    for (const line of lines) {
+      if (text.length + line.length > 1900) break;
+      text += `${line}\n`;
+    }
+    return message.reply(text);
+  },
+};
+
+
+/** The !admin group. Exported so plugins' admin commands can be mounted under it. */
+export const adminGroup: Command = {
+  name: 'admin',
+  description: 'Bot administration: settings, status, audit log.',
+  requiredRole: 'admin',
+  subcommands: [config, status, auditCmd],
 };
 
 export const adminModule: Module = {
   id: 'admin',
   title: 'Admin',
-  description: 'Bot administration (bot administrators only).',
-  commands: [admin],
+  description: 'Bot administration (bot admins and root).',
+  commands: [adminGroup],
 };

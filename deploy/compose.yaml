@@ -1,22 +1,63 @@
-# /opt/bitbot/compose.yaml: production. Its own compose project; no ports, outbound HTTPS only.
-#   /opt/bitbot/.env        settings and secrets (root:docker 660), from deploy/env.example
-#   /opt/bitbot/plugins/    bot-managed: plugins.json + plugin repo clones (writable by uid 1000)
-#   /opt/bitbot/public/     the generated help.html (writable by uid 1000), if HELP_PAGE_PATH is set
+# /opt/bitbot/compose.yaml: production, with Postgres. Its own compose project; no ports, outbound HTTPS only.
+#   /opt/bitbot/.env              bootstrap settings (root:docker 660), from deploy/env.example
+#   /opt/bitbot/secrets/          one file per secret (root:docker 640); see deploy/README.md
+#     fluxer_bot_token              the bot token
+#     postgres_password             the database password
+#     database_url                  postgres://bitbot:<password>@db:5432/bitbot
+#   /opt/bitbot/plugins/          bot-managed: plugins.json + plugin repo clones (writable by uid 1000)
+#   /opt/bitbot/public/           the generated help.html (writable by uid 1000), if help_page_path is set
+#   /opt/bitbot/pgdata/           Postgres data
+#   /opt/bitbot/permissions.yaml  who administers the bot (from permissions.example.yaml), read-only
+#
+# Small install without Postgres? Delete the `db` service, the database_url/postgres_password secrets
+# and depends_on, and mount ./data:/app/data instead: the bot then uses SQLite (sqlite:data/bitbot.db).
 name: bitbot
 
 services:
   bot:
-    image: ghcr.io/bitrot-cafe/bitbot:0.1.0 # pin a release tag; bump to upgrade
+    image: ghcr.io/bitrot-cafe/bitbot:0.3.0 # pin a release tag; bump to upgrade
     env_file: .env
     environment:
       PLUGINS_DIR: /app/plugins
+      FLUXER_BOT_TOKEN_FILE: /run/secrets/fluxer_bot_token
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets: [fluxer_bot_token, database_url]
     volumes:
       - ./plugins:/app/plugins
       - ./public:/app/public
+      - ./permissions.yaml:/app/permissions.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 15s # the bot exits within ~5s of SIGTERM
-    logging:
+    logging: &logging
       driver: json-file
       options:
         max-size: 10m
         max-file: '3'
+
+  db:
+    image: postgres:17-alpine # pin the major; upgrading majors needs a dump/restore
+    environment:
+      POSTGRES_USER: bitbot
+      POSTGRES_DB: bitbot
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bitbot -d bitbot']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *logging
+
+secrets:
+  fluxer_bot_token:
+    file: ./secrets/fluxer_bot_token
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url

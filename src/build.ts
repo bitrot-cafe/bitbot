@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 /*
  * Which build is running. Images get BITBOT_VERSION / BITBOT_COMMIT baked in by CI (see the
- * Containerfile). A dev checkout reads .git directly (the dev image has no git binary).
+ * Containerfile). A dev checkout reads .git directly, which needs no git binary.
  */
 
 const root = fileURLToPath(new URL('../', import.meta.url));

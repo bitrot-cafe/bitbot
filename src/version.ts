@@ -1,10 +1,15 @@
+import { readFileSync } from 'node:fs';
+
 /*
- * Plugin API version. Plugins declare the version they need in their package.json:
- *   { "bitbot": { "api": "1.0" } }   →  needs 1.0 or later, but not 2.0
- * Bump the MINOR when the plugin API only gains things (old plugins keep working).
- * Bump the MAJOR on any breaking change to the `bot` object or the plugin format.
+ * Plugin API version: the bot's own major.minor (package.json), so the two can't drift. Plugins declare
+ * the version they need in their package.json:
+ *   { "bitbot": { "api": "0.3" } }   →  needs 0.3 or later, within the same major
+ * Within a major, a minor release only adds to the API; a new major may break plugins. While on 0.x,
+ * anything may change in any minor (unstable, best effort): the check still only compares majors and
+ * minors, so an older 0.x plugin loads and may need updating.
  */
-export const API_VERSION = '1.0';
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+export const API_VERSION = pkg.version.split('.').slice(0, 2).join('.');
 
 export type ApiCheck = { status: 'ok' } | { status: 'undeclared' } | { status: 'incompatible'; reason: string };
 
@@ -17,7 +22,7 @@ const parse = (v: string) => {
 export function checkApiVersion(required: string | undefined, current = API_VERSION): ApiCheck {
   if (required === undefined) return { status: 'undeclared' };
   const need = parse(required);
-  if (!need) return { status: 'incompatible', reason: `"${required}" isn't a valid bot API version (expected major.minor, e.g. 1.0)` };
+  if (!need) return { status: 'incompatible', reason: `"${required}" isn't a valid bot API version (expected major.minor, e.g. 0.3)` };
   const have = parse(current)!;
   if (need.major !== have.major || need.minor > have.minor) {
     return { status: 'incompatible', reason: `needs bot API ${required}; this bot has ${current}` };

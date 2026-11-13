@@ -1,4 +1,12 @@
 node_modules
 dist
-.env
 .git
+.env
+.env.*
+*.swp
+*.swo
+plugins
+public
+data
+secrets
+HANDOFF.md

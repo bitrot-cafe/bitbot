@@ -1,14 +1,7 @@
-import {
-  UserFlagsBits,
-  type Client,
-  type Guild,
-  type GuildMember,
-  type Message,
-  type PermissionString,
-  type User,
-} from '@fluxerjs/core';
-import { trustInstanceStaff } from './config.js';
+import { type Guild, type GuildMember, type Message, type PermissionString } from '@fluxerjs/core';
 import type { Command } from './plugin.js';
+import { requiredRolesOf } from './registry.js';
+import { rolesOf } from './roles.js';
 
 // Labels as Fluxer's UI shows them (en-US), so users can find the toggle.
 // Source: fluxerapp/fluxer fluxer_app/src/features/permissions/utils/PermissionLabelDescriptors.ts
@@ -57,35 +50,20 @@ export const permissionLabel = (name: PermissionString) =>
 
 /*
  * Who may run a command. Checks run in this order (see checkAccess):
- *   1. Bot admin   — `botAdminOnly` commands: anything that affects the whole bot.
- *                    Bot admins = the application's owner (from the API), plus instance staff when
- *                    TRUST_INSTANCE_STAFF=true. Bot admins get no extra powers inside guilds.
+ *   1. Bot roles   — the command's requiredRole (inherited from its group): root, admin, or a role a
+ *                    plugin defines. From permissions.yaml (roles.ts); root holds every role.
  *   2. Guild scope — commands with `guildOnly` or `userPermissions` don't run in DMs.
- *   3. Guild perms — Fluxer's own permissions for the caller and the bot in that channel
- *                    (roles + channel overwrites; guild owner and Administrator pass everything).
- * Later, with storage: per-guild overrides (grant/restrict commands by role or channel) after step 3.
+ *   3. Guild perms — Fluxer's own permissions for the caller and the bot in that channel (roles +
+ *                    channel overwrites; guild owner and Administrator pass everything). root skips the
+ *                    caller's check (root can do anything); the bot's own permissions are always checked.
+ * Later: per-guild rules (grant/restrict commands by role, user or channel), after step 1.
  */
 
-let applicationOwnerId: string | null = null;
-
-/** Look up who owns the bot's application. Runs on every (re)connect; cheap. */
-export async function loadApplicationOwner(client: Client) {
-  const app = await client.rest.get<{ owner?: { id: string } }>('/oauth2/applications/@me');
-  applicationOwnerId = app.owner?.id ?? null;
-}
-
-/** Whether the user carries the instance Staff flag. Public flags include it unless they hid their staff badge. */
-export async function hasStaffFlag(user: User): Promise<boolean> {
-  const flags = user.flags ?? (await user.client.users.fetch(user.id)).flags ?? 0; // gateway users can be partial
-  return (BigInt(flags) & UserFlagsBits.Staff) !== 0n;
-}
-
-export async function isBotAdmin(user: User): Promise<boolean> {
-  if (user.id === applicationOwnerId) return true;
-  return trustInstanceStaff && (await hasStaffFlag(user));
-}
-
-/** A member's effective permissions in a channel (roles + overwrites), or guild-wide if the channel isn't cached. */
+/**
+ * A member's effective permissions in a channel (roles + overwrites). If the channel isn't cached this
+ * falls back to the member's guild-wide permissions, which ignore channel overwrites: fine for display,
+ * not for access decisions (checkAccess resolves the channel instead).
+ */
 export function permissionsIn(member: GuildMember, guild: Guild, channelId: string) {
   const channel = guild.channels.get(channelId);
   return channel ? member.permissionsIn(channel) : member.permissions;
@@ -93,23 +71,42 @@ export function permissionsIn(member: GuildMember, guild: Guild, channelId: stri
 
 /** Why `message.author` can't run `command` here, as a reply; null when they can. */
 export async function checkAccess(message: Message, command: Command): Promise<string | null> {
-  if (command.botAdminOnly && !(await isBotAdmin(message.author))) return '🔒 Only bot administrators can use this.';
+  const held = await rolesOf(message.author);
+  const root = held.has('root');
+  const missingRole = root ? undefined : requiredRolesOf(command).find((r) => !held.has(r));
+  if (missingRole) return `🔒 Only ${roleLabel(missingRole)} can use this.`;
   if ((command.guildOnly || command.userPermissions?.length) && !message.guildId) return '🔒 This only works in a server.';
-  return missingPermissionsReply(await findMissingPermissions(message, command));
+  const missing = await findMissingPermissions(message, root ? { ...command, userPermissions: [] } : command);
+  return missingPermissionsReply(missing);
 }
 
+/** "bot root", "bot admins", or "the bot role **x**". */
+export const roleLabel = (role: string) =>
+  role === 'root' ? 'bot root' : role === 'admin' ? 'bot admins' : `holders of the bot role **${role}**`;
+
 /**
- * Which of the command's declared permissions are missing, for the bot and for the caller.
- * Checks channel-level permissions (role + overwrites) where possible, guild-level otherwise.
+ * Which of the command's declared permissions are missing, for the bot and for the caller, in this
+ * channel (roles + channel overwrites). Throws if the guild or channel can't be loaded: the command
+ * then doesn't run, rather than being checked against guild-wide permissions.
  */
 async function findMissingPermissions(message: Message, command: Command) {
   const missing = { bot: [] as PermissionString[], user: [] as PermissionString[] };
+  if (!message.guildId) return missing; // DMs: nothing to check
   const guild = await message.resolveGuild();
-  if (!guild) return missing; // DMs: nothing to check
+  // A guild message whose guild can't be loaded: the permissions can't be checked, so don't run it.
+  if (!guild) throw new Error(`Couldn't load guild ${message.guildId} to check permissions`);
 
+  // The channel itself, so its overwrites count: from the cache, else the API. If it can't be resolved,
+  // refuse rather than fall back to guild-wide permissions, which would ignore a channel-level deny.
+  let channel: Parameters<GuildMember['permissionsIn']>[0] | null = null;
+  const resolveChannel = async () => {
+    channel ??= (guild.channels.get(message.channelId) ?? (await message.resolveChannel().catch(() => null))) as typeof channel;
+    if (!channel) throw new Error(`Couldn't load channel ${message.channelId} to check permissions`);
+    return channel;
+  };
   const check = async (getMember: () => Promise<GuildMember>, wanted: PermissionString[] = []) => {
     if (wanted.length === 0) return [];
-    const perms = permissionsIn(await getMember(), guild, message.channelId);
+    const perms = (await getMember()).permissionsIn(await resolveChannel());
     return wanted.filter((p) => !perms.has(p));
   };
 

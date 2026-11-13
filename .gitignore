@@ -1,10 +1,16 @@
+# Node stuff
 node_modules/
 dist/
+
+# Environment file
 .env
 
 # Bot-managed: plugin repo clones and plugins.json (see examples/ for the example plugin)
 plugins/
 public/
+
+# SQLite database (default DATABASE_URL)
+data/
 
 # Editor swap/backup files (an .env swap file holds secrets)
 *.swp
@@ -12,3 +18,9 @@ public/
 *~
 .env.*
 !.env.example
+
+# Who administers the bot (copy permissions.example.yaml)
+permissions.yaml
+
+# Scratch notes and hand-off files (reviews, plans)
+.tmp/

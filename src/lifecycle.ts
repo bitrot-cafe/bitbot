@@ -32,16 +32,21 @@ export async function shutdown(why: string, code = 0) {
 
 /**
  * Restart the bot, e.g. to load changed plugins (ES modules can't be cleanly unloaded).
- * Production: exit, and the container's restart policy (`restart: unless-stopped`) starts it again.
- * Dev: `tsx watch` doesn't restart a process that exits, so touch the entry file instead; the watcher
- * then stops this process (SIGTERM, the normal shutdown) and starts a fresh one.
+ * Under `tsx watch` (the dev container and `pnpm dev` set BITBOT_WATCH=1): the watcher doesn't restart a
+ * process that exits, so touch the entry file instead; the watcher then stops this process (SIGTERM, the
+ * normal shutdown) and starts a fresh one.
+ * Otherwise (production, plain `pnpm start`): exit, and the container's restart policy
+ * (`restart: unless-stopped`) or process manager starts it again. Without one, the bot stays stopped.
  */
 export async function restart(why: string) {
-  if (process.env.NODE_ENV !== 'production') {
-    log.info(`Restarting (dev, via the file watcher): ${why}`);
+  if (process.env.BITBOT_WATCH === '1') {
+    log.info(`Restarting (via the file watcher): ${why}`);
     const now = new Date();
     await utimes(fileURLToPath(new URL('./index.ts', import.meta.url)), now, now);
     return;
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    log.notice('Restarting by exiting: something (a container restart policy, a process manager) must start the bot again');
   }
   await shutdown(`restart: ${why}`);
 }

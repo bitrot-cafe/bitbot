@@ -27,3 +27,11 @@ test('undeclared vs malformed', () => {
     assert.equal(checkApiVersion(bad, '1.0').status, 'incompatible', bad);
   }
 });
+
+test('API_VERSION is the bot version\'s major.minor', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { API_VERSION } = await import('./version.js');
+  const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(API_VERSION, version.split('.').slice(0, 2).join('.'));
+  assert.match(API_VERSION, /^\d+\.\d+$/);
+});

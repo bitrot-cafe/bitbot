@@ -1,4 +1,4 @@
-// !whoami [@user] — what the bot knows about you (or someone else): identity, bot-level access,
+// !whoami [@user] — what the bot knows about you (or someone else): identity, bot roles,
 // and (in a guild) member info.
 import type { PermissionString } from '@fluxerjs/core';
 import type { Command, PluginFactory } from 'bitbot';
@@ -22,7 +22,7 @@ const NOTABLE: PermissionString[] = [
 const when = (date: Date) => `<t:${Math.floor(date.getTime() / 1000)}:D>`;
 
 const plugin: PluginFactory = (bot) => {
-  const { prefix, hasStaffFlag, isBotAdmin, permissionLabel, permissionsIn } = bot;
+  const { hasStaffFlag, rolesOf, permissionLabel, permissionsIn } = bot;
   const { EmbedBuilder, parseUserMention } = bot.fluxer;
 
   const whoami: Command = {
@@ -30,10 +30,10 @@ const plugin: PluginFactory = (bot) => {
     description: 'Show what the bot knows about you (or another user), including access level.',
     usage: '[@user]',
     botPermissions: ['EmbedLinks'],
-    run: async (message, [target]) => {
+    run: async (message, [target], _rest, ctx) => {
       // Accept a mention or a raw user ID; default to the caller.
       const targetId = target ? (parseUserMention(target) ?? (/^\d+$/.test(target) ? target : null)) : message.author.id;
-      if (!targetId) return message.reply(`Usage: \`${prefix}whoami [@user]\``);
+      if (!targetId) return ctx.usage();
       let user;
       try {
         // Fetch so flags are always present (gateway users can be partial).
@@ -50,7 +50,7 @@ const plugin: PluginFactory = (bot) => {
           { name: 'Username', value: `${user.username}${user.bot ? ' (bot)' : ''}`, inline: true },
           { name: 'ID', value: `\`${user.id}\``, inline: true },
           { name: 'Account created', value: when(user.createdAt), inline: true },
-          { name: 'Bot administrator', value: (await isBotAdmin(user)) ? 'yes' : 'no', inline: true },
+          { name: 'Bot roles', value: (await rolesOf(user)).join(', ') || 'none', inline: true },
           { name: 'Instance staff', value: staff ? 'yes' : 'no', inline: true },
         );
 
@@ -81,7 +81,7 @@ const plugin: PluginFactory = (bot) => {
     version: '0.1.0',
     author: 'UVClay',
     repo: 'https://github.com/bitrot-cafe/bitbot-plugins',
-    description: 'Shows a user (default: the caller) their identity, bot administrator/staff status, and server roles and permissions.',
+    description: 'Shows a user (default: the caller) their identity, bot roles, staff status, and server roles and permissions.',
     commands: [whoami],
   };
 };

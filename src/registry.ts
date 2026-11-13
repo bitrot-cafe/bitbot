@@ -12,7 +12,7 @@ export const modules: Module[] = [];
  */
 export const plugins: (Plugin & { id: string; source?: string; api?: string })[] = [];
 
-/** Plugins that were found but not loaded, and why (shown by !admin plugins list). */
+/** Plugins that were found but not loaded, and why (shown by !root plugins list). */
 export const disabledPlugins: { id: string; name?: string; reason: string }[] = [];
 
 /** Every top-level command, by name: built-ins plus those from plugins. */
@@ -25,12 +25,17 @@ export const commands = new Map<string, Command>();
 
 const union = <T>(a: T[] = [], b: T[] = []) => [...new Set([...a, ...b])];
 
+/** Every bot role a command requires: its own and (once resolved) its parents'. */
+export const requiredRolesOf = (c: Command) => c.requiredRoles ?? (c.requiredRole ? [c.requiredRole] : []);
+
 function inherit(parent: Command, child: Command): Command {
   return {
     ...child,
     name: `${parent.name} ${child.name}`,
-    botAdminOnly: parent.botAdminOnly || child.botAdminOnly,
+    requiredRoles: union(requiredRolesOf(parent), requiredRolesOf(child)),
+    origin: child.origin ?? parent.origin,
     guildOnly: parent.guildOnly || child.guildOnly,
+    cooldown: child.cooldown ?? parent.cooldown,
     userPermissions: union(parent.userPermissions, child.userPermissions),
     botPermissions: union(parent.botPermissions, child.botPermissions),
   };

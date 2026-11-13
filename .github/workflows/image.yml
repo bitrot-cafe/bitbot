@@ -13,11 +13,21 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Tests run twice: SQLite (in memory) and this Postgres, including the SQLite ↔ Postgres copy test.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: bitbot
+          POSTGRES_PASSWORD: bitbot
+          POSTGRES_DB: bitbot
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bitbot" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -27,12 +37,20 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: test (SQLite)
+        run: pnpm test
+      - name: test (Postgres)
+        run: pnpm test
+        env:
+          TEST_DATABASE_URL: postgres://bitbot:bitbot@localhost:5432/bitbot
 
   image:
     needs: check
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -50,7 +68,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             # Major-version tag (:0, :1, ...). metadata-action's {{major}} skips 0.x, so match it directly.
             type=match,pattern=^v(\d+)\.\d+\.\d+$,group=1
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # Releases only: a pre-release tag (v1.0.0-rc1) also matches v*.*.*, but mustn't move :latest.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
             type=raw,value=edge,enable={{is_default_branch}}
             type=sha,prefix=sha-
       - uses: docker/build-push-action@v6

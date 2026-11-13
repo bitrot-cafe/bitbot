@@ -1,28 +1,31 @@
 import { randomBytes } from 'node:crypto';
 import { EmbedBuilder, serializeError, type Client, type PermissionString } from '@fluxerjs/core';
-import { debug, logChannelId } from './config.js';
+import { coreSettings } from './core-settings.js';
 import { permissionLabel, permissionsIn } from './permissions.js';
 
 /*
  * Logging. Every line goes to the console; notices, warnings and errors also go to LOG_CHANNEL_ID when set.
  * Use notice for normal events an operator should see (e.g. an account was disabled), not for problems.
- * Debug mode (DEBUG=true, or !admin debug on) shows debug lines and puts error details in user replies.
+ * Debug mode (DEBUG=true, or !root debug on) shows debug lines and puts error details in user replies.
  */
 
 type Level = 'debug' | 'info' | 'notice' | 'warn' | 'error';
 type Fields = Record<string, unknown>;
 
-let debugMode = debug;
+/** Runtime override from !root debug when the debug setting can't be stored (DEBUG is set in env). */
+let debugOverride: boolean | null = null;
 let client: Client | null = null;
+const logChannelId = () => coreSettings.logChannel();
 
-export const isDebug = () => debugMode;
-export function setDebug(on: boolean) {
-  debugMode = on;
+export const isDebug = () => debugOverride ?? coreSettings.debug();
+/** Override debug mode until restart (null: back to the setting). */
+export function setDebug(on: boolean | null) {
+  debugOverride = on;
 }
 
 /** Start posting warnings and errors to the log channel (if configured). Call once the client exists. */
 export function attachLogChannel(c: Client) {
-  if (logChannelId) client = c;
+  client = c; // whether to post is decided per line, so a log_channel change applies at once
 }
 
 /**
@@ -30,21 +33,22 @@ export function attachLogChannel(c: Client) {
  * Runs on every (re)connect; problems go to the console only (the channel is what's broken).
  */
 export async function checkLogChannel(c: Client) {
-  if (!logChannelId) return;
+  const channelId = logChannelId();
+  if (!channelId) return;
   const problem = await (async () => {
-    const channel = await c.channels.resolve(logChannelId).catch(() => null);
+    const channel = await c.channels.resolve(channelId).catch(() => null);
     if (!channel) return "it doesn't exist or the bot can't see it";
     const guildId = (channel as { guildId?: string | null }).guildId;
     const guild = guildId ? c.guilds.get(guildId) : null;
     if (!guild) return "it isn't a channel in a server the bot is in";
     const me = guild.members.me ?? (await guild.members.fetchMe());
-    const perms = permissionsIn(me, guild, logChannelId);
+    const perms = permissionsIn(me, guild, channelId);
     const needed: PermissionString[] = ['ViewChannel', 'SendMessages', 'EmbedLinks'];
     const missing = needed.filter((p) => !perms.has(p));
     return missing.length ? `the bot is missing ${missing.map(permissionLabel).join(', ')} there` : null;
   })().catch((error) => `checking it failed: ${errorMessage(error)}`);
 
-  if (problem) console.warn(`LOG_CHANNEL_ID ${logChannelId} can't be used: ${problem}. Errors will only be logged here.`);
+  if (problem) console.warn(`Log channel ${channelId} can't be used: ${problem}. Errors will only be logged here.`);
 }
 
 /** Short message for an unknown thrown value. */
@@ -77,7 +81,7 @@ function toEmbed({ level, source, message, fields, error, ref }: Entry) {
   if (error !== undefined) {
     const text = error instanceof Error ? error.message : String(error);
     embed.addFields({ name: 'Error', value: block(text) });
-    if (debugMode && error instanceof Error && error.stack) {
+    if (isDebug() && error instanceof Error && error.stack) {
       embed.addFields({ name: 'Stack', value: block(error.stack.split('\n').slice(1, 8).join('\n')) });
     }
   }
@@ -85,19 +89,60 @@ function toEmbed({ level, source, message, fields, error, ref }: Entry) {
   return embed;
 }
 
+/*
+ * Log channel flood guard: at most POST_LIMIT posts per POST_WINDOW_MS. Past that, lines go to the console
+ * only, and one summary of how many were held back is posted when the window ends. A plugin failing every
+ * second would otherwise bury the channel (and hit the API's rate limits).
+ */
+const POST_LIMIT = 10;
+const POST_WINDOW_MS = 60_000;
+let windowStart = 0;
+let posted = 0;
+let suppressed = 0;
+
+function post(channelId: string, embed: EmbedBuilder) {
+  client!.channels
+    .send(channelId, { embeds: [embed] })
+    .catch((postError) => console.error('Could not post to the log channel:', postError)); // console only: no loop
+}
+
+function postToLogChannel(channelId: string, entry: Entry) {
+  const now = Date.now();
+  if (now - windowStart >= POST_WINDOW_MS) {
+    windowStart = now;
+    posted = 0;
+  }
+  if (posted >= POST_LIMIT) {
+    if (suppressed++ === 0) {
+      setTimeout(() => {
+        const embed = new EmbedBuilder()
+          .setTitle(`${STYLE.warn.emoji} WARN`)
+          .setColor(STYLE.warn.color)
+          .setDescription(`${suppressed} more log line(s) weren't posted here (over ${POST_LIMIT} a minute). See the console log.`)
+          .setTimestamp();
+        suppressed = 0;
+        const id = logChannelId();
+        if (client?.user && id) post(id, embed);
+      }, windowStart + POST_WINDOW_MS - now).unref();
+    }
+    return;
+  }
+  posted++;
+  post(channelId, toEmbed(entry));
+}
+
 function emit(entry: Entry) {
   const { level, source, message, fields, error, ref } = entry;
-  if (level === 'debug' && !debugMode) return;
+  if (level === 'debug' && !isDebug()) return;
   const extra = { ...fields, ...(error === undefined ? {} : { error: serializeError(error) }) };
   const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(6)} [${source.name}] ${message}${ref ? ` (ref ${ref})` : ''}`;
   const out = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   Object.keys(extra).length ? out(line, extra) : out(line);
 
   // Only once connected: before login the API rejects us (startup errors stay console-only).
-  if (client?.user && (level === 'notice' || level === 'warn' || level === 'error')) {
-    client.channels
-      .send(logChannelId, { embeds: [toEmbed(entry)] })
-      .catch((postError) => console.error('Could not post to the log channel:', postError)); // console only: no loop
+  const channelId = client?.user ? logChannelId() : '';
+  if (channelId && (level === 'notice' || level === 'warn' || level === 'error')) {
+    postToLogChannel(channelId, entry);
   }
 }
 

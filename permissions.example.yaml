@@ -1,0 +1,23 @@
+# permissions.yaml: who administers the bot itself. Copy this file to permissions.yaml.
+# The bot reads it at startup only; nothing in chat can change it. A malformed file stops the bot.
+#
+# - The application owner is always root. With no file at all, they're the only bot administrator.
+# - root holds every role, skips per-guild permission checks, and can't be overruled by admin.
+# - Quote user IDs: they're too big for YAML numbers.
+# - staff: true grants a role to anyone with the instance Staff badge. Never use it on fluxer.app,
+#   where Staff means Fluxer employees.
+
+roles:
+  # Plugins (installing code that runs on the host), restarts, debug mode. Give it only to people who
+  # already have access to the host.
+  root:
+    users: []
+
+  # Settings, the bot status, the audit log. No extra powers inside guilds.
+  admin:
+    staff: false
+    users: []
+
+  # Roles that plugins define (listed in their package.json) work the same way, e.g.:
+  # access-sync-operator:
+  #   users: ["1234567890123456789"]

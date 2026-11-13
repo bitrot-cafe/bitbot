@@ -1,10 +1,11 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { helpPagePath, prefix } from './config.js';
+import { dirname, isAbsolute, join } from 'node:path';
+import { appRoot } from './config.js';
+import { coreSettings } from './core-settings.js';
 import { createLogger } from './logger.js';
 import { permissionLabel } from './permissions.js';
 import type { Command } from './plugin.js';
-import { commands, leaves, modules, plugins } from './registry.js';
+import { commands, leaves, modules, plugins, requiredRolesOf } from './registry.js';
 
 /* Shared by the !help command and the generated web help page. */
 
@@ -14,30 +15,40 @@ export type Section = { title: string; id: string; description?: string; command
 
 /**
  * Built-in modules first, then each plugin, as runnable commands (subcommands flattened, e.g. "admin status").
- * Commands that lost a name clash are left out (they can't be run).
+ * A plugin's commands mounted under !root / !admin are listed with the plugin (as "admin access sync"),
+ * not with the core group. Commands that lost a name clash are left out (they can't be run).
  */
 export function sections(): Section[] {
-  const live = (list: Command[]) => list.filter((c) => commands.get(c.name) === c).flatMap(leaves);
+  const runnable = [...commands.values()].flatMap(leaves);
   return [
-    ...modules.map((m) => ({ title: m.title, id: m.id, description: m.description, commands: live(m.commands) })),
-    ...plugins.map((p) => ({ title: p.name, id: p.id, description: p.description, commands: live(p.commands) })),
+    ...modules.map((m) => ({
+      title: m.title,
+      id: m.id,
+      description: m.description,
+      commands: m.commands.filter((c) => commands.get(c.name) === c).flatMap(leaves).filter((c) => !c.origin),
+    })),
+    ...plugins.map((p) => ({ title: p.name, id: p.id, description: p.description, commands: runnable.filter((c) => c.origin === p.id) })),
   ].filter((s) => s.commands.length);
 }
 
 /** Usage lines for a group's subcommands, shown when the group itself is run. */
-export const groupUsage = (group: Command) =>
+export const groupUsage = (group: Command, prefix: string) =>
   leaves(group)
-    .map((c) => `\`${usageLine(c)}\` — ${c.description}`)
+    .map((c) => `\`${usageLine(c, prefix)}\` — ${c.description}`)
     .join('\n');
 
-export const usageLine = (c: Command) => `${prefix}${c.name}${c.usage ? ` ${c.usage}` : ''}`;
+/** "!name <usage>". Pass the prefix of the guild it's shown in; default: the bot-wide prefix. */
+export const usageLine = (c: Command, prefix = coreSettings.prefix()) => `${prefix}${c.name}${c.usage ? ` ${c.usage}` : ''}`;
 
-export const whoCanUse = (c: Command) =>
-  c.botAdminOnly
-    ? 'Bot administrators'
-    : c.userPermissions?.length
-      ? c.userPermissions.map(permissionLabel).join(', ')
-      : 'Everyone';
+export function whoCanUse(c: Command) {
+  const roles = requiredRolesOf(c);
+  if (roles.includes('root')) return 'Bot root';
+  const parts = [
+    ...roles.map((r) => (r === 'admin' ? 'Bot admins' : `Bot role: ${r}`)),
+    ...(c.userPermissions ?? []).map(permissionLabel),
+  ];
+  return parts.join(', ') || 'Everyone';
+}
 
 const escape = (s: string) =>
   s.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
@@ -47,7 +58,11 @@ const escape = (s: string) =>
  * Returns the path written, or null if not configured or the write failed.
  */
 export async function writeHelpPage(botName: string): Promise<string | null> {
-  if (!helpPagePath) return null;
+  const configured = coreSettings.helpPagePath();
+  if (!configured) return null;
+  // Relative to the app folder, like every other configured path (database, permissions.yaml).
+  const helpPagePath = isAbsolute(configured) ? configured : join(appRoot, configured);
+  const prefix = coreSettings.prefix();
   const body = sections()
     .map(
       (s) => `<section>

@@ -2,16 +2,22 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EmbedBuilder, type Client } from '@fluxerjs/core';
 import { botInviteUrl } from './invite.js';
-import { adminModule } from './admin.js';
-import { createLogger } from './logger.js';
-import { botApi } from './api.js';
-import { debug, helpUrl, pluginsDir, prefix } from './config.js';
-import { findPluginFolders } from './repos.js';
+import { adminGroup, adminModule } from './admin.js';
+import { rootGroup, rootModule } from './root.js';
+import { BUILTIN_ROLES, unknownRoles } from './roles.js';
+import { createLogger, isDebug } from './logger.js';
+import { botApiFor } from './api.js';
+import { pluginsDir } from './config.js';
+import { coreSettings } from './core-settings.js';
+import { enabledFilter, findPluginFolders } from './repos.js';
+import { configFor, defineSettings } from './settings.js';
+import { createStore } from './store.js';
 import { checkApiVersion } from './version.js';
 import { sections, usageLine, whoCanUse } from './help.js';
+import { code } from './text.js';
 import { checkAccess } from './permissions.js';
 import type { Command, Plugin, PluginFactory } from './plugin.js';
-import { commands, disabledPlugins, modules, plugins, resolveCommand } from './registry.js';
+import { commands, disabledPlugins, leaves, modules, plugins, requiredRolesOf, resolveCommand } from './registry.js';
 
 const log = createLogger('plugins');
 
@@ -42,7 +48,10 @@ const help: Command = {
   description: 'List commands, or show a plugin\'s commands or one command\'s details.',
   usage: '[plugin | command]',
   botPermissions: ['EmbedLinks'],
+  cooldown: 0, // browsing help (!help, !help access, ...) is normal use
   run: async (message, _args, query) => {
+    const prefix = coreSettings.prefix(message.guildId);
+    const line = (c: Command) => usageLine(c, prefix);
     // Only show what the caller can actually use here.
     const usable = async (list: Command[]) => {
       const ok: Command[] = [];
@@ -51,6 +60,7 @@ const help: Command = {
     };
     const all = sections();
     const embed = new EmbedBuilder();
+    const helpUrl = coreSettings.helpUrl();
     if (helpUrl) embed.setURL(helpUrl);
 
     const words = query ? query.split(/\s+/) : [];
@@ -70,14 +80,14 @@ const help: Command = {
         (c) => c.name !== command.name && (from?.id !== 'core' || c.name.startsWith(`${command.name} `)),
       );
       embed
-        .setTitle(`\`${usageLine(command)}\``)
+        .setTitle(`\`${line(command)}\``)
         .setDescription(command.description)
         .addFields(
           { name: 'From', value: from?.title ?? 'Core', inline: true },
           { name: 'Who can use it', value: whoCanUse(command), inline: true },
         );
       if (related.length) {
-        embed.addFields({ name: `Also in ${from!.title}`, value: related.map((c) => `\`${usageLine(c)}\``).join('\n') });
+        embed.addFields({ name: `Also in ${from!.title}`, value: related.map((c) => `\`${line(c)}\``).join('\n') });
       }
       return message.reply({ embeds: [embed] });
     }
@@ -88,14 +98,14 @@ const help: Command = {
       embed
         .setTitle(section.title)
         .setDescription(
-          [section.description, list.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n') || 'Nothing here you can use.']
+          [section.description, list.map((c) => `\`${line(c)}\` — ${c.description}`).join('\n') || 'Nothing here you can use.']
             .filter(Boolean)
             .join('\n\n'),
         );
       return message.reply({ embeds: [embed] });
     }
 
-    if (query) return message.reply(`No command or plugin called \`${query}\`. Try \`${prefix}help\`.`);
+    if (query) return message.reply(`No command or plugin called ${code(query)}. Try \`${prefix}help\`.`);
 
     // !help: core commands in full, one line per plugin
     embed.setTitle('Commands').setFooter({ text: `${prefix}help <plugin | command> for more` });
@@ -105,17 +115,14 @@ const help: Command = {
       if (!list.length) continue;
       const value = s.id !== 'core'
         ? `${s.description ?? ''}\n\`${prefix}help ${shortId(s.id)}\` · ${list.length} command${list.length === 1 ? '' : 's'}`.trim()
-        : list.map((c) => `\`${usageLine(c)}\` — ${c.description}`).join('\n');
+        : list.map((c) => `\`${line(c)}\` — ${c.description}`).join('\n');
       embed.addFields({ name: s.title, value });
     }
     return message.reply({ embeds: [embed] });
   },
 };
 
-modules.push(
-  { id: 'core', title: 'Core', commands: [help, ping, invite] },
-  adminModule,
-);
+modules.push({ id: 'core', title: 'Core', commands: [help, ping, invite] }, rootModule, adminModule);
 for (const command of modules.flatMap((m) => m.commands)) commands.set(command.name, command);
 
 // ---- Plugin loading -------------------------------------------------------------------------------
@@ -131,6 +138,31 @@ function asPlugin(value: unknown): Plugin {
 
 type Candidate = Plugin & { id: string; source?: string; api?: string };
 
+/**
+ * Command names (at any depth) that can never be typed: lookups lower-case what the user wrote, so a name
+ * with capitals is dead, and a name with whitespace can't be one word. Returns the offending paths.
+ */
+export function badCommandNames(list: Command[], parent = ''): string[] {
+  return list.flatMap((c) => {
+    const path = parent ? `${parent} ${c.name}` : c.name;
+    const own = typeof c.name !== 'string' || !c.name || c.name !== c.name.toLowerCase() || /\s/.test(c.name) ? [JSON.stringify(path)] : [];
+    return [...own, ...badCommandNames(c.subcommands ?? [], path)];
+  });
+}
+
+/** Names plugins can't use (core settings scopes, modules, and plugin sources). */
+const RESERVED_NAMES = new Set(['core', 'admin', 'root', 'local', 'builtin']);
+
+/** The core groups a plugin command is mounted under when it requires that role. */
+const MOUNTS: Record<string, Command> = { root: rootGroup, admin: adminGroup };
+
+/** A plugin command's path once registered: "access", or "admin access" when mounted. */
+export const pathOf = (c: Command) => (c.requiredRole && MOUNTS[c.requiredRole] ? `${c.requiredRole} ${c.name}` : c.name);
+
+/** Every top-level command path the core owns: "help", "admin", "admin config", ... */
+export const corePaths = () =>
+  new Set([...commands.entries()].flatMap(([name, c]) => [name, ...(c.subcommands ?? []).filter((s) => !s.origin).map((s) => `${name} ${s.name}`)]));
+
 /** Last part of a plugin id: "bitbot-plugins/addemote" -> "addemote". */
 export const shortId = (id: string) => id.split('/').pop()!;
 
@@ -140,13 +172,14 @@ export const shortId = (id: string) => id.split('/').pop()!;
  * is disabled, so the clash gets noticed and fixed rather than half-working. Returns id -> reason.
  */
 export function findClashes(candidates: Candidate[], coreNames: Set<string>) {
+  const prefix = coreSettings.prefix();
   const reasons = new Map<string, string>();
   const flag = (ids: string[], reason: string) => ids.forEach((id) => reasons.set(id, reasons.get(id) ?? reason));
 
   const byCommand = new Map<string, string[]>();
   const byShortId = new Map<string, string[]>();
   for (const c of candidates) {
-    for (const cmd of new Set(c.commands.map((x) => x.name))) byCommand.set(cmd, [...(byCommand.get(cmd) ?? []), c.id]);
+    for (const cmd of new Set(c.commands.map(pathOf))) byCommand.set(cmd, [...(byCommand.get(cmd) ?? []), c.id]);
     byShortId.set(shortId(c.id), [...(byShortId.get(shortId(c.id)) ?? []), c.id]);
   }
   for (const [cmd, ids] of byCommand) {
@@ -155,6 +188,8 @@ export function findClashes(candidates: Candidate[], coreNames: Set<string>) {
   }
   for (const [name, ids] of byShortId) {
     if (ids.length > 1) flag(ids, `the plugin name "${name}" is used by ${ids.join(' and ')}`);
+    // A plugin's short name is its settings scope; these belong to the core.
+    if (RESERVED_NAMES.has(name)) flag(ids, `"${name}" is a reserved name`);
   }
   return reasons;
 }
@@ -169,14 +204,22 @@ export async function loadPlugins() {
     log.warn(`Can't read the plugins folder ${pluginsDir}; starting without plugins`, { error: String(error) });
     return [];
   });
+  // Plugins in repos are opt-in: only the ones listed as enabled in plugins.json load.
+  const enabled = await enabledFilter();
+  const toLoad = folders.filter(enabled);
 
   // Pass 1: import everything that can be imported.
   const candidates: Candidate[] = [];
-  for (const { id, dir, source, api } of folders) {
+  for (const { id, dir, source, api, problem } of toLoad) {
+    if (problem) {
+      createLogger(id, 'plugin').error(`Not loaded: its package.json is malformed: ${problem}`);
+      disabledPlugins.push({ id, reason: `malformed package.json: ${problem}` });
+      continue;
+    }
     // Checked before import, so an incompatible plugin's code never runs (unless DEBUG=true).
     const check = checkApiVersion(api);
     if (check.status === 'incompatible') {
-      if (!debug) {
+      if (!isDebug()) {
         createLogger(id, 'plugin').error(`Not loaded: ${check.reason}. Update the plugin, or set DEBUG=true to load it anyway.`);
         disabledPlugins.push({ id, reason: check.reason });
         continue;
@@ -188,7 +231,15 @@ export async function loadPlugins() {
     try {
       const factory: PluginFactory = (await import(pathToFileURL(join(dir, 'index.ts')).href)).default;
       if (typeof factory !== 'function') throw new Error('index.ts must default-export a function: (bot) => plugin');
-      candidates.push({ ...asPlugin(await factory(botApi)), id, source, api });
+      const plugin = asPlugin(await factory(botApiFor(id, shortId(id))));
+      const bad = badCommandNames(plugin.commands);
+      if (bad.length) {
+        const reason = `command names must be lower case with no spaces: ${bad.join(', ')}`;
+        createLogger(id, 'plugin').error(`Not loaded: ${reason}`);
+        disabledPlugins.push({ id, name: plugin.name, reason });
+        continue;
+      }
+      candidates.push({ ...plugin, id, source, api });
     } catch (error) {
       createLogger(id, 'plugin').error('Failed to load plugin', error);
       disabledPlugins.push({ id, reason: `failed to load: ${error instanceof Error ? error.message : String(error)}` });
@@ -196,7 +247,7 @@ export async function loadPlugins() {
   }
 
   // Pass 2: refuse clashes (unless debugging), then register.
-  const clashes = debug ? new Map<string, string>() : findClashes(candidates, new Set(commands.keys()));
+  const clashes = isDebug() ? new Map<string, string>() : findClashes(candidates, corePaths());
   for (const plugin of candidates) {
     const clash = clashes.get(plugin.id);
     if (clash) {
@@ -204,24 +255,55 @@ export async function loadPlugins() {
       disabledPlugins.push({ id: plugin.id, name: plugin.name, reason: clash });
       continue;
     }
+    // Declared before its commands are registered: a bad env value (wrong type, unreadable _FILE) disables
+    // the plugin rather than letting it run on a value it didn't expect.
+    const problems = plugin.config ? defineSettings(shortId(plugin.id), plugin.config) : [];
+    if (problems.length) {
+      const reason = `invalid settings: ${problems.join('; ')}`;
+      createLogger(plugin.id, 'plugin').error(`Disabled: ${reason}`);
+      disabledPlugins.push({ id: plugin.id, name: plugin.name, reason });
+      continue;
+    }
+    const meta = folders.find((f) => f.id === plugin.id);
     for (const command of plugin.commands) {
-      if (commands.has(command.name)) {
-        log.warn(`Plugin "${plugin.id}": command "${command.name}" already exists, skipping it (DEBUG mode).`);
+      command.origin = plugin.id;
+      if (command.cooldown === undefined && meta?.cooldown !== undefined) command.cooldown = meta.cooldown;
+      // Role-gated commands live under the role's group (!admin access), so they're grouped the same way everywhere.
+      const group = command.requiredRole ? MOUNTS[command.requiredRole] : undefined;
+      const taken = group ? group.subcommands!.some((s) => s.name === command.name) : commands.has(command.name);
+      if (taken) {
+        log.warn(`Plugin "${plugin.id}": command "${pathOf(command)}" already exists, skipping it (DEBUG mode).`);
         continue;
       }
-      commands.set(command.name, command);
+      if (group) group.subcommands!.push(command);
+      else commands.set(command.name, command);
+    }
+    // A role the plugin requires but doesn't declare can't be found in permissions.yaml's checks; say so.
+    const declared = new Set([...BUILTIN_ROLES, ...(meta?.roles ?? [])]);
+    const undeclared = [...new Set(plugin.commands.flatMap(leaves).flatMap(requiredRolesOf))].filter((r) => !declared.has(r));
+    if (undeclared.length) {
+      createLogger(plugin.id, 'plugin').warn(`Requires bot role(s) its package.json doesn't declare ("bitbot": { "roles": [...] }): ${undeclared.join(', ')}`);
     }
     plugins.push(plugin);
     log.info(`Loaded plugin ${plugin.name} v${plugin.version} from ${plugin.id} (${plugin.commands.length} commands)`);
   }
+
+  // Roles in permissions.yaml that neither the core nor any plugin present (enabled or not) declares:
+  // most likely a typo, which would silently grant nothing.
+  const unknown = unknownRoles(folders.flatMap((f) => f.roles ?? []));
+  if (unknown.length) startupWarnings.push(`permissions.yaml has role(s) nothing declares (typo?): ${unknown.join(', ')}`);
 }
+
+/** Problems found while loading, repeated once connected so they reach the log channel. */
+export const startupWarnings: string[] = [];
 
 /** Run each plugin's setup hook. Call once, after the first Ready. One plugin failing doesn't stop the others. */
 export async function startPlugins(client: Client) {
   for (const p of plugins) {
     if (!p.setup) continue;
     try {
-      await p.setup({ client, log: createLogger(p.id, 'plugin') });
+      const scope = shortId(p.id);
+      await p.setup({ client, log: createLogger(p.id, 'plugin'), config: configFor(scope), store: createStore(scope) });
     } catch (error) {
       createLogger(p.id, 'plugin').error('Setup failed', error);
     }
